@@ -1,6 +1,32 @@
 use std::net::SocketAddr;
 
+use crate::core::torrent::TorrentMeta;
+
 #[derive(Debug, Clone, Copy)]
 pub enum CoreCommand {
     ProbePeer(SocketAddr),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionTelemetry {
+    pub in_flight_requests: usize,
+    pub retries: u32,
+    pub duplicate_blocks: u32,
+    pub unexpected_blocks: u32,
+    pub downloaded_bytes: u32,
+    pub time_to_first_piece_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CoreMessage {
+    Status(String),
+    TorrentLoaded(TorrentMeta),
+    PeerFound(SocketAddr),
+    TrackerDone(usize),
+    ProbeQueued(SocketAddr),
+    ProbeStarted(SocketAddr),
+    ProbeSucceeded(SocketAddr, String),
+    ProbeFailed(SocketAddr, String),
+    TelemetryUpdate(SocketAddr, SessionTelemetry),
+    Error(String),
 }

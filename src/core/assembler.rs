@@ -9,6 +9,13 @@ pub enum AssemblerState {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BlockClass {
+    ExpectedNew,
+    Duplicate,
+    Unexpected,
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockRequest {
     pub begin: u32,
@@ -68,22 +75,43 @@ impl PieceAssembler {
             .count()
     }
 
-    pub fn next_request(&mut self, timeout: Duration) -> Option<(u32, u32)> {
+    pub fn next_request(&mut self, timeout: Duration) -> Option<(u32, u32, bool)> {
         let now = Instant::now();
         for block in self.blocks.iter_mut().filter(|b| !b.completed) {
             match block.requested_at {
                 None => {
                     block.requested_at = Some(now);
-                    return Some((block.begin, block.length));
+                    return Some((block.begin, block.length, false));
                 }
                 Some(req_time) if now.duration_since(req_time) > timeout => {
                     block.requested_at = Some(now);
-                    return Some((block.begin, block.length));
+                    return Some((block.begin, block.length, true));
                 }
                 _ => continue,
             }
         }
         None
+    }
+
+    pub fn classify_block(&self, begin: u32, data_len: u32) -> BlockClass {
+        if begin + data_len > self.expected_length {
+            return BlockClass::Unexpected;
+        }
+
+        for block in &self.blocks {
+            if block.begin == begin && block.length == data_len {
+                if block.completed {
+                    return BlockClass::Duplicate;
+                }
+                return BlockClass::ExpectedNew;
+            }
+        }
+
+        BlockClass::Unexpected
+    }
+
+    pub fn received_bytes(&self) -> u32 {
+        self.received_bytes
     }
 
     pub fn add_block(&mut self, begin: u32, data: &[u8]) -> AssemblerState {

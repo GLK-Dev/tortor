@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::mpsc::Sender;
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,6 +8,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::net::handshake::Handshake;
 use crate::net::session;
+use crate::core::command::CoreMessage;
 
 pub async fn execute_probe(
     addr: SocketAddr,
@@ -15,6 +17,7 @@ pub async fn execute_probe(
     target_piece_index: u32,
     target_piece_length: u32,
     expected_piece_hash: [u8; 20],
+    ui_sender: &Sender<CoreMessage>,
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
@@ -40,6 +43,8 @@ pub async fn execute_probe(
         target_piece_index,
         target_piece_length,
         expected_piece_hash,
+        addr,
+        ui_sender,
     )
     .await
 }

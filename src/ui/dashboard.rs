@@ -9,24 +9,11 @@ use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
 use crate::core::bencode;
-use crate::core::command::CoreCommand;
+use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::peer_id::generate_peer_id;
 use crate::core::torrent::TorrentMeta;
 use crate::net::probe;
 use crate::net::tracker;
-
-#[derive(Debug)]
-enum CoreMessage {
-    Status(String),
-    TorrentLoaded(TorrentMeta),
-    PeerFound(SocketAddr),
-    TrackerDone(usize),
-    ProbeQueued(SocketAddr),
-    ProbeStarted(SocketAddr),
-    ProbeSucceeded(SocketAddr, String),
-    ProbeFailed(SocketAddr, String),
-    Error(String),
-}
 
 #[derive(Debug, Clone)]
 enum ProbeState {
@@ -41,6 +28,7 @@ enum ProbeState {
 struct PeerRow {
     addr: SocketAddr,
     state: ProbeState,
+    telemetry: Option<SessionTelemetry>,
 }
 
 const MAX_CONCURRENT_PROBES: usize = 10;
@@ -183,6 +171,7 @@ fn background_task(
                         piece_index,
                         piece_length,
                         piece_hash,
+                        &tx_clone,
                     )
                     .await;
                     drop(permit);
@@ -250,6 +239,7 @@ impl TorTorApp {
                 CoreMessage::PeerFound(addr) => self.peers.push(PeerRow {
                     addr,
                     state: ProbeState::Idle,
+                    telemetry: None,
                 }),
                 CoreMessage::TrackerDone(count) => {
                     self.logs.push(format!("Tracker returned {count} peers"));
@@ -269,6 +259,11 @@ impl TorTorApp {
                 CoreMessage::ProbeFailed(addr, err) => {
                     self.update_peer_state(addr, ProbeState::Failed(err.clone()));
                     self.logs.push(format!("Probe failed for {addr}: {err}"));
+                }
+                CoreMessage::TelemetryUpdate(addr, telemetry) => {
+                    if let Some(row) = self.peers.iter_mut().find(|row| row.addr == addr) {
+                        row.telemetry = Some(telemetry);
+                    }
                 }
                 CoreMessage::Error(err) => {
                     self.logs.push(format!("Error: {err}"));
@@ -304,6 +299,11 @@ impl eframe::App for TorTorApp {
                         let addr = row.addr;
                         let state_text = Self::status_label(&row.state);
                         let can_probe = !matches!(row.state, ProbeState::Probing);
+                        let piece_len = self
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.piece_len_at(0))
+                            .unwrap_or(1);
 
                         ui.horizontal(|ui| {
                             ui.monospace(addr.to_string());
@@ -316,6 +316,37 @@ impl eframe::App for TorTorApp {
                                 let _ = self.command_tx.send(CoreCommand::ProbePeer(addr));
                             }
                         });
+
+                        if let Some(tel) = &row.telemetry {
+                            let progress = (tel.downloaded_bytes as f32 / piece_len as f32)
+                                .clamp(0.0, 1.0);
+
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::ProgressBar::new(progress)
+                                        .desired_width(180.0)
+                                        .text(format!(
+                                            "{} / {} B",
+                                            tel.downloaded_bytes, piece_len
+                                        )),
+                                );
+
+                                let ttfp = tel
+                                    .time_to_first_piece_ms
+                                    .map(|v| format!(" | TTFP: {} ms", v))
+                                    .unwrap_or_default();
+
+                                ui.label(format!(
+                                    "In-flight: {} | Retries: {} | Drops: {}{}",
+                                    tel.in_flight_requests,
+                                    tel.retries,
+                                    tel.unexpected_blocks + tel.duplicate_blocks,
+                                    ttfp
+                                ));
+                            });
+                        }
+
+                        ui.separator();
                     }
                 });
 
