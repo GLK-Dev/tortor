@@ -11,6 +11,12 @@ pub enum CoordinatorMsg {
     RequestWork(oneshot::Sender<Option<u32>>),
     PieceDownloaded(u32, Vec<u8>),
     PieceFailed(u32),
+    ReadPiece {
+        index: u32,
+        begin: u32,
+        length: u32,
+        reply: oneshot::Sender<Option<Vec<u8>>>,
+    },
 }
 
 pub async fn run_coordinator(
@@ -67,6 +73,28 @@ pub async fn run_coordinator(
             }
             CoordinatorMsg::PieceFailed(index) => {
                 manager.return_work(index);
+            }
+            CoordinatorMsg::ReadPiece {
+                index,
+                begin,
+                length,
+                reply,
+            } => {
+                let should_serve = matches!(manager.piece_state(index), Some(crate::core::manager::PieceState::Downloaded));
+
+                let data = if should_serve {
+                    match disk_writer.read_piece(index, begin, length).await {
+                        Ok(block) => Some(block),
+                        Err(err) => {
+                            error!("failed to read piece {} from disk: {}", index, err);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let _ = reply.send(data);
             }
         }
     }

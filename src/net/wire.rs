@@ -148,6 +148,38 @@ impl PeerMessage {
             .context("failed to send Request message")?;
         Ok(())
     }
+
+    pub async fn send_piece(
+        stream: &mut TcpStream,
+        index: u32,
+        begin: u32,
+        block: &[u8],
+    ) -> Result<()> {
+        let len = 9u32 + block.len() as u32;
+
+        stream
+            .write_u32(len)
+            .await
+            .context("failed to send Piece length")?;
+        stream
+            .write_u8(7)
+            .await
+            .context("failed to send Piece id")?;
+        stream
+            .write_u32(index)
+            .await
+            .context("failed to send Piece index")?;
+        stream
+            .write_u32(begin)
+            .await
+            .context("failed to send Piece begin")?;
+        stream
+            .write_all(block)
+            .await
+            .context("failed to send Piece block")?;
+
+        Ok(())
+    }
 }
 
 async fn drain_payload(stream: &mut TcpStream, payload_len: usize) -> Result<()> {

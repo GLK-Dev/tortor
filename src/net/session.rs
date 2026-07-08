@@ -93,6 +93,7 @@ pub async fn run_download_session(
             expected_hash,
             peer_addr,
             &ui_sender,
+            &coord_sender,
             &mut shutdown_rx,
             swarm_event_tx.as_ref(),
         )
@@ -153,6 +154,7 @@ async fn download_piece(
     expected_hash: [u8; 20],
     peer_addr: SocketAddr,
     ui_sender: &mpsc::Sender<CoreMessage>,
+    coord_sender: &mpsc::Sender<CoordinatorMsg>,
     shutdown_rx: &mut broadcast::Receiver<()>,
     swarm_event_tx: Option<&mpsc::UnboundedSender<SwarmEvent>>,
 ) -> Result<PieceOutcome> {
@@ -198,7 +200,26 @@ async fn download_piece(
                 PeerMessage::Unchoke => state.peer_choking = false,
                 PeerMessage::Interested => state.peer_interested = true,
                 PeerMessage::NotInterested => state.peer_interested = false,
-                PeerMessage::Have(_) | PeerMessage::Bitfield(_) | PeerMessage::Request { .. } => {}
+                PeerMessage::Have(_) | PeerMessage::Bitfield(_) => {}
+                PeerMessage::Request { index, begin, length } => {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    if coord_sender
+                        .send(CoordinatorMsg::ReadPiece {
+                            index,
+                            begin,
+                            length,
+                            reply: reply_tx,
+                        })
+                        .await
+                        .is_ok()
+                    {
+                        if let Ok(Some(block)) = reply_rx.await {
+                            if let Err(err) = PeerMessage::send_piece(stream, index, begin, &block).await {
+                                bail!("failed to send piece {}: {err}", index);
+                            }
+                        }
+                    }
+                }
                 PeerMessage::Piece {
                     index,
                     begin,

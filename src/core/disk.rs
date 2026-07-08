@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 pub struct DiskWriter {
     file: File,
@@ -42,5 +42,20 @@ impl DiskWriter {
         self.file.sync_data().await?;
 
         Ok(())
+    }
+
+    pub async fn read_piece(&mut self, piece_index: u32, offset: u32, len: u32) -> Result<Vec<u8>> {
+        let piece_offset = (piece_index as u64) * (self.piece_length as u64);
+        let absolute_offset = piece_offset + offset as u64;
+
+        self.file.seek(SeekFrom::Start(absolute_offset)).await?;
+
+        let mut buffer = vec![0u8; len as usize];
+        self.file
+            .read_exact(&mut buffer)
+            .await
+            .context("failed to read piece data from disk")?;
+
+        Ok(buffer)
     }
 }
