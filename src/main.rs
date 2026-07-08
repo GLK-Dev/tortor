@@ -3,10 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 
 use tortor::core::bencode;
 use tortor::net::listener;
+use tortor::net::tracker;
 
 /// TorTor - High-performance BitTorrent client
 #[derive(Parser, Debug)]
@@ -23,6 +24,10 @@ struct Args {
     /// Start incoming peer listener on the given port
     #[arg(long)]
     listen_port: Option<u16>,
+
+    /// Query HTTP tracker and print returned peers
+    #[arg(long, default_value_t = false)]
+    announce_tracker: bool,
 }
 
 #[tokio::main]
@@ -49,8 +54,35 @@ async fn main() -> Result<()> {
         None => println!("Total size   : multi-file mode (not yet summarized)"),
     }
 
+    let peer_id = generate_peer_id();
+    let port = args.listen_port.unwrap_or(6881);
+
+    if args.announce_tracker {
+        if meta.announce.starts_with("http://") || meta.announce.starts_with("https://") {
+            let left = meta
+                .total_length
+                .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+
+            let peers = tracker::announce(&meta.announce, &meta.info_hash, &peer_id, port, left)
+                .await
+                .context("tracker announce failed")?;
+
+            println!("Peers from tracker: {}", peers.len());
+            for peer in peers.iter().take(20) {
+                println!("  {}", peer.addr);
+            }
+            if peers.len() > 20 {
+                println!("  ... and {} more", peers.len() - 20);
+            }
+        } else {
+            warn!(
+                "Skipping tracker announce: only HTTP/HTTPS trackers are supported right now ({})",
+                meta.announce
+            );
+        }
+    }
+
     if let Some(port) = args.listen_port {
-        let peer_id = generate_peer_id();
         info!("Starting listener mode on port {port}");
         info!("Local peer id: {}", String::from_utf8_lossy(&peer_id));
         listener::start_listener(port, meta.info_hash, peer_id).await?;
