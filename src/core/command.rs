@@ -5,6 +5,7 @@ use crate::core::torrent::TorrentMeta;
 #[derive(Debug, Clone, Copy)]
 pub enum CoreCommand {
     ProbePeer(SocketAddr),
+    StartSwarm,
     StopAll,
 }
 
@@ -24,6 +25,7 @@ pub enum CoreMessage {
     TorrentLoaded(TorrentMeta),
     GlobalProgress(f32),
     DownloadComplete,
+    ShutdownComplete,
     PeerFound(SocketAddr),
     TrackerDone(usize),
     ProbeQueued(SocketAddr),

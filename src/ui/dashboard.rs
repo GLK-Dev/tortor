@@ -5,8 +5,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
-use tokio::sync::{broadcast, mpsc as tokio_mpsc, Semaphore};
-use tokio::time::{sleep, timeout, Duration};
+use tokio::sync::{broadcast, mpsc as tokio_mpsc};
+use tokio::time::{sleep, Duration};
 
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
@@ -17,6 +17,7 @@ use crate::core::peer_id::generate_peer_id;
 use crate::core::resume::load_fastresume;
 use crate::core::torrent::TorrentMeta;
 use crate::net::probe;
+use crate::net::swarm;
 use crate::net::tracker;
 
 #[derive(Debug, Clone)]
@@ -34,9 +35,6 @@ struct PeerRow {
     state: ProbeState,
     telemetry: Option<SessionTelemetry>,
 }
-
-const MAX_CONCURRENT_PROBES: usize = 10;
-const PROBE_QUEUE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
     let (msg_tx, msg_rx) = mpsc::channel::<CoreMessage>();
@@ -161,23 +159,63 @@ fn background_task(
         shutdown_tx.subscribe(),
     ));
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES));
     let expected_hashes = Arc::new(meta.pieces.clone());
     let piece_length = meta.piece_length;
     let total_length = meta.total_length;
+    let available_peers: std::collections::VecDeque<SocketAddr> =
+        peers.iter().map(|p| p.addr).collect();
+    let mut swarm_started = false;
 
     tx.send(CoreMessage::Status(format!(
-        "Probe limiter enabled: max {MAX_CONCURRENT_PROBES} concurrent probes"
+        "Swarm is ready. Press Start Swarm to begin autonomous download"
     )))
     .ok();
 
     while let Ok(command) = command_rx.recv() {
         match command {
+            CoreCommand::StartSwarm => {
+                if swarm_started {
+                    tx.send(CoreMessage::Status("Swarm is already running".to_string()))
+                        .ok();
+                    continue;
+                }
+
+                swarm_started = true;
+                let info_hash = meta.info_hash;
+                let swarm_peer_id = peer_id;
+                let expected_hashes = Arc::clone(&expected_hashes);
+                let ui_async_tx = ui_async_tx.clone();
+                let coord_tx = coord_tx.clone();
+                let shutdown_tx = shutdown_tx.clone();
+                let available = available_peers.clone();
+
+                runtime.spawn(async move {
+                    swarm::run_swarm_manager(
+                        available,
+                        info_hash,
+                        swarm_peer_id,
+                        expected_hashes,
+                        piece_length,
+                        total_length,
+                        ui_async_tx,
+                        coord_tx,
+                        shutdown_tx,
+                    )
+                    .await;
+                });
+            }
             CoreCommand::ProbePeer(addr) => {
+                if swarm_started {
+                    tx.send(CoreMessage::Status(
+                        "Ignoring manual worker start while swarm is running".to_string(),
+                    ))
+                    .ok();
+                    continue;
+                }
+
                 tx.send(CoreMessage::ProbeQueued(addr)).ok();
 
                 let tx_clone = tx.clone();
-                let sem_clone = Arc::clone(&semaphore);
                 let info_hash = meta.info_hash;
                 let probe_peer_id = peer_id;
                 let expected_hashes = Arc::clone(&expected_hashes);
@@ -186,27 +224,6 @@ fn background_task(
                 let shutdown_rx = shutdown_tx.subscribe();
 
                 runtime.spawn(async move {
-                    let permit = match timeout(PROBE_QUEUE_TIMEOUT, sem_clone.acquire_owned()).await {
-                        Ok(Ok(permit)) => permit,
-                        Ok(Err(_)) => {
-                            let _ = tx_clone.send(CoreMessage::ProbeFailed(
-                                addr,
-                                "probe limiter closed".to_string(),
-                            ));
-                            return;
-                        }
-                        Err(_) => {
-                            let _ = tx_clone.send(CoreMessage::ProbeFailed(
-                                addr,
-                                format!(
-                                    "queue timeout after {}s",
-                                    PROBE_QUEUE_TIMEOUT.as_secs()
-                                ),
-                            ));
-                            return;
-                        }
-                    };
-
                     let _ = tx_clone.send(CoreMessage::ProbeStarted(addr));
                     let result = probe::execute_probe(
                         addr,
@@ -218,9 +235,9 @@ fn background_task(
                         ui_async_tx,
                         coord_tx,
                         shutdown_rx,
+                        None,
                     )
                     .await;
-                    drop(permit);
 
                     match result {
                         Ok(status) => {
@@ -239,6 +256,7 @@ fn background_task(
                 runtime.block_on(async {
                     sleep(Duration::from_millis(800)).await;
                 });
+                tx.send(CoreMessage::ShutdownComplete).ok();
                 break;
             }
         }
@@ -255,6 +273,8 @@ struct TorTorApp {
     meta: Option<TorrentMeta>,
     global_progress: f32,
     status: String,
+    is_shutting_down: bool,
+    swarm_started: bool,
 }
 
 impl TorTorApp {
@@ -267,7 +287,21 @@ impl TorTorApp {
             meta: None,
             global_progress: 0.0,
             status: "Ready".to_string(),
+            is_shutting_down: false,
+            swarm_started: false,
         }
+    }
+
+    fn request_shutdown(&mut self) {
+        if self.is_shutting_down {
+            return;
+        }
+
+        self.is_shutting_down = true;
+        self.status = "Stopping workers and persisting state...".to_string();
+        self.logs
+            .push("Shutdown requested: waiting for graceful stop".to_string());
+        let _ = self.command_tx.send(CoreCommand::StopAll);
     }
 
     fn update_peer_state(&mut self, addr: SocketAddr, state: ProbeState) {
@@ -286,7 +320,9 @@ impl TorTorApp {
         }
     }
 
-    fn pump_messages(&mut self) {
+    fn pump_messages(&mut self) -> bool {
+        let mut shutdown_complete = false;
+
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 CoreMessage::Status(text) => {
@@ -305,6 +341,11 @@ impl TorTorApp {
                     self.global_progress = 1.0;
                     self.status = "Download complete".to_string();
                     self.logs.push("All pieces were downloaded".to_string());
+                }
+                CoreMessage::ShutdownComplete => {
+                    self.status = "Shutdown complete".to_string();
+                    self.logs.push("All workers stopped safely".to_string());
+                    shutdown_complete = true;
                 }
                 CoreMessage::PeerFound(addr) => self.peers.push(PeerRow {
                     addr,
@@ -340,18 +381,48 @@ impl TorTorApp {
                 }
             }
         }
+
+        shutdown_complete
     }
 }
 
 impl eframe::App for TorTorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.pump_messages();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.is_shutting_down {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_shutdown();
+        }
+
+        let shutdown_complete = self.pump_messages();
+        if shutdown_complete {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        if self.is_shutting_down {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.heading("Stopping modules and saving state...");
+                    ui.add_space(12.0);
+                    ui.spinner();
+                });
+            });
+            ctx.request_repaint();
+            return;
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("TorTor Core Dashboard");
             ui.label(format!("Status: {}", self.status));
+            if ui
+                .add_enabled(!self.swarm_started, egui::Button::new("Start Swarm"))
+                .clicked()
+            {
+                self.swarm_started = true;
+                let _ = self.command_tx.send(CoreCommand::StartSwarm);
+            }
             if ui.button("Stop All").clicked() {
-                let _ = self.command_tx.send(CoreCommand::StopAll);
+                self.request_shutdown();
             }
             ui.separator();
 
@@ -388,7 +459,7 @@ impl eframe::App for TorTorApp {
                             ui.label(state_text);
 
                             if ui
-                                .add_enabled(can_probe, egui::Button::new("Start Worker"))
+                                .add_enabled(can_probe && !self.swarm_started, egui::Button::new("Start Worker"))
                                 .clicked()
                             {
                                 let _ = self.command_tx.send(CoreCommand::ProbePeer(addr));

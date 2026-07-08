@@ -11,6 +11,7 @@ use crate::core::coordinator::CoordinatorMsg;
 use crate::net::handshake::Handshake;
 use crate::net::session;
 use crate::core::command::CoreMessage;
+use crate::net::swarm::SwarmEvent;
 
 pub async fn execute_probe(
     addr: SocketAddr,
@@ -22,6 +23,7 @@ pub async fn execute_probe(
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     shutdown_rx: broadcast::Receiver<()>,
+    swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
@@ -51,6 +53,7 @@ pub async fn execute_probe(
         ui_sender,
         coord_sender,
         shutdown_rx,
+        swarm_event_tx,
     )
     .await?;
 

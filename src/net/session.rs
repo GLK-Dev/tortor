@@ -11,6 +11,7 @@ use crate::core::assembler::{AssemblerState, BlockClass, PieceAssembler};
 use crate::core::coordinator::CoordinatorMsg;
 use crate::core::command::{CoreMessage, SessionTelemetry};
 use crate::crypto::dispatch::{hash_piece, HashAlgorithm};
+use crate::net::swarm::SwarmEvent;
 use crate::net::wire::PeerMessage;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,6 +45,7 @@ pub async fn run_download_session(
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
 ) -> Result<()> {
     let mut state = PeerState::new();
 
@@ -92,6 +94,7 @@ pub async fn run_download_session(
             peer_addr,
             &ui_sender,
             &mut shutdown_rx,
+            swarm_event_tx.as_ref(),
         )
         .await;
 
@@ -151,6 +154,7 @@ async fn download_piece(
     peer_addr: SocketAddr,
     ui_sender: &mpsc::Sender<CoreMessage>,
     shutdown_rx: &mut broadcast::Receiver<()>,
+    swarm_event_tx: Option<&mpsc::UnboundedSender<SwarmEvent>>,
 ) -> Result<PieceOutcome> {
     let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
     let mut telemetry = SessionTelemetry::default();
@@ -236,6 +240,9 @@ async fn download_piece(
 
                     match assembler.add_block(begin, &block) {
                         AssemblerState::InProgress => {
+                            if let Some(tx) = swarm_event_tx {
+                                let _ = tx.send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
+                            }
                             telemetry.downloaded_bytes = assembler.received_bytes();
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
@@ -247,6 +254,9 @@ async fn download_piece(
                         }
                         AssemblerState::Error(err) => bail!("assembler error: {err}"),
                         AssemblerState::Complete(buffer) => {
+                            if let Some(tx) = swarm_event_tx {
+                                let _ = tx.send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
+                            }
                             telemetry.downloaded_bytes = assembler.received_bytes();
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
