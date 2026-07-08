@@ -5,11 +5,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc as tokio_mpsc, Semaphore};
 use tokio::time::{timeout, Duration};
 
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
+use crate::core::coordinator::{self, CoordinatorMsg};
+use crate::core::disk::DiskWriter;
+use crate::core::manager::TorrentManager;
 use crate::core::peer_id::generate_peer_id;
 use crate::core::torrent::TorrentMeta;
 use crate::net::probe;
@@ -83,7 +86,7 @@ fn background_task(
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
     let peer_id = generate_peer_id();
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
@@ -100,29 +103,45 @@ fn background_task(
     ))
     .ok();
 
-    let target_piece_index = 0u32;
-    let expected_piece_hash = match meta.piece_hash(target_piece_index as usize) {
-        Some(hash) => hash,
-        None => {
-            tx.send(CoreMessage::Status(
-                "Torrent has no piece hashes; probe data-path disabled".to_string(),
-            ))
-            .ok();
-            return Ok(());
+    if meta.pieces.is_empty() {
+        tx.send(CoreMessage::Status(
+            "Torrent has no piece hashes; download data-path disabled".to_string(),
+        ))
+        .ok();
+        return Ok(());
+    }
+
+    let (ui_async_tx, mut ui_async_rx) = tokio_mpsc::channel::<CoreMessage>(1024);
+    let ui_bridge_tx = tx.clone();
+    runtime.spawn(async move {
+        while let Some(msg) = ui_async_rx.recv().await {
+            let _ = ui_bridge_tx.send(msg);
         }
-    };
-    let target_piece_length = match meta.piece_len_at(target_piece_index as usize) {
-        Some(len) if len > 0 => len,
-        _ => {
-            tx.send(CoreMessage::Status(
-                "Unable to determine target piece length; probe data-path disabled".to_string(),
-            ))
-            .ok();
-            return Ok(());
-        }
-    };
+    });
+
+    let total_size = meta
+        .total_length
+        .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+    let output_path = torrent_path.with_extension("download.part");
+    let disk_writer = runtime.block_on(DiskWriter::init(
+        output_path,
+        total_size,
+        meta.piece_length,
+    ))?;
+    let manager = TorrentManager::new(meta.pieces_count);
+    let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
+    runtime.spawn(coordinator::run_coordinator(
+        coord_rx,
+        ui_async_tx.clone(),
+        manager,
+        disk_writer,
+    ));
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES));
+    let expected_hashes = Arc::new(meta.pieces.clone());
+    let piece_length = meta.piece_length;
+    let total_length = meta.total_length;
+
     tx.send(CoreMessage::Status(format!(
         "Probe limiter enabled: max {MAX_CONCURRENT_PROBES} concurrent probes"
     )))
@@ -137,9 +156,9 @@ fn background_task(
                 let sem_clone = Arc::clone(&semaphore);
                 let info_hash = meta.info_hash;
                 let probe_peer_id = peer_id;
-                let piece_index = target_piece_index;
-                let piece_length = target_piece_length;
-                let piece_hash = expected_piece_hash;
+                let expected_hashes = Arc::clone(&expected_hashes);
+                let ui_async_tx = ui_async_tx.clone();
+                let coord_tx = coord_tx.clone();
 
                 runtime.spawn(async move {
                     let permit = match timeout(PROBE_QUEUE_TIMEOUT, sem_clone.acquire_owned()).await {
@@ -168,10 +187,11 @@ fn background_task(
                         addr,
                         info_hash,
                         probe_peer_id,
-                        piece_index,
+                        expected_hashes,
                         piece_length,
-                        piece_hash,
-                        &tx_clone,
+                        total_length,
+                        ui_async_tx,
+                        coord_tx,
                     )
                     .await;
                     drop(permit);
@@ -198,6 +218,8 @@ struct TorTorApp {
     peers: Vec<PeerRow>,
     logs: Vec<String>,
     meta: Option<TorrentMeta>,
+    global_progress: f32,
+    status: String,
 }
 
 impl TorTorApp {
@@ -208,6 +230,8 @@ impl TorTorApp {
             peers: Vec::new(),
             logs: vec!["GUI started. Waiting for core events...".to_string()],
             meta: None,
+            global_progress: 0.0,
+            status: "Ready".to_string(),
         }
     }
 
@@ -230,11 +254,22 @@ impl TorTorApp {
     fn pump_messages(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                CoreMessage::Status(text) => self.logs.push(text),
+                CoreMessage::Status(text) => {
+                    self.status = text.clone();
+                    self.logs.push(text);
+                }
                 CoreMessage::TorrentLoaded(meta) => {
                     self.logs
                         .push(format!("Loaded torrent: {}", meta.name));
                     self.meta = Some(meta);
+                }
+                CoreMessage::GlobalProgress(progress) => {
+                    self.global_progress = progress.clamp(0.0, 1.0);
+                }
+                CoreMessage::DownloadComplete => {
+                    self.global_progress = 1.0;
+                    self.status = "Download complete".to_string();
+                    self.logs.push("All pieces were downloaded".to_string());
                 }
                 CoreMessage::PeerFound(addr) => self.peers.push(PeerRow {
                     addr,
@@ -279,6 +314,11 @@ impl eframe::App for TorTorApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("TorTor Core Dashboard");
+            ui.label(format!("Status: {}", self.status));
+            ui.separator();
+
+            ui.heading("TorTor Global Progress");
+            ui.add(egui::ProgressBar::new(self.global_progress).show_percentage());
             ui.separator();
 
             if let Some(meta) = &self.meta {
@@ -310,7 +350,7 @@ impl eframe::App for TorTorApp {
                             ui.label(state_text);
 
                             if ui
-                                .add_enabled(can_probe, egui::Button::new("Start Probe"))
+                                .add_enabled(can_probe, egui::Button::new("Start Worker"))
                                 .clicked()
                             {
                                 let _ = self.command_tx.send(CoreCommand::ProbePeer(addr));

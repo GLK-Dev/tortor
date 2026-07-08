@@ -1,11 +1,13 @@
 use anyhow::{bail, Context, Result};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use std::net::SocketAddr;
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::assembler::{AssemblerState, BlockClass, PieceAssembler};
+use crate::core::coordinator::CoordinatorMsg;
 use crate::core::command::{CoreMessage, SessionTelemetry};
 use crate::crypto::dispatch::{hash_piece, HashAlgorithm};
 use crate::net::wire::PeerMessage;
@@ -32,23 +34,109 @@ impl PeerState {
     }
 }
 
-pub async fn run_probe_session(
+pub async fn run_download_session(
     stream: &mut TcpStream,
-    target_piece_index: u32,
-    target_piece_length: u32,
-    expected_hash: [u8; 20],
+    expected_hashes: Arc<Vec<[u8; 20]>>,
+    piece_length: u32,
+    total_length: Option<u64>,
     peer_addr: SocketAddr,
-    ui_sender: &Sender<CoreMessage>,
-) -> Result<String> {
+    ui_sender: mpsc::Sender<CoreMessage>,
+    coord_sender: mpsc::Sender<CoordinatorMsg>,
+) -> Result<()> {
     let mut state = PeerState::new();
-    let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
-    let mut telemetry = SessionTelemetry::default();
-    let session_start = Instant::now();
 
     timeout(IO_TIMEOUT, PeerMessage::send_interested(stream))
         .await
         .context("timeout while sending Interested")??;
     state.am_interested = true;
+
+    loop {
+        let (work_tx, work_rx) = oneshot::channel();
+        if coord_sender
+            .send(CoordinatorMsg::RequestWork(work_tx))
+            .await
+            .is_err()
+        {
+            break;
+        }
+
+        let target_piece_index = match work_rx.await {
+            Ok(Some(index)) => index,
+            _ => break,
+        };
+
+        let expected_hash = match expected_hashes.get(target_piece_index as usize) {
+            Some(hash) => *hash,
+            None => {
+                let _ = coord_sender
+                    .send(CoordinatorMsg::PieceFailed(target_piece_index))
+                    .await;
+                bail!("invalid piece index requested: {}", target_piece_index);
+            }
+        };
+
+        let target_piece_length = piece_len_at(target_piece_index, piece_length, total_length)
+            .ok_or_else(|| anyhow::anyhow!("invalid piece length for piece {}", target_piece_index))?;
+
+        let piece_result = download_piece(
+            stream,
+            &mut state,
+            target_piece_index,
+            target_piece_length,
+            expected_hash,
+            peer_addr,
+            &ui_sender,
+        )
+        .await;
+
+        match piece_result {
+            Ok(buffer) => {
+                if coord_sender
+                    .send(CoordinatorMsg::PieceDownloaded(target_piece_index, buffer))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(err) => {
+                let _ = coord_sender
+                    .send(CoordinatorMsg::PieceFailed(target_piece_index))
+                    .await;
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn piece_len_at(index: u32, piece_length: u32, total_length: Option<u64>) -> Option<u32> {
+    if let Some(total) = total_length {
+        let piece_len = piece_length as u64;
+        let start = (index as u64).checked_mul(piece_len)?;
+        if start >= total {
+            return None;
+        }
+        let remaining = total - start;
+        return Some(std::cmp::min(piece_len, remaining) as u32);
+    }
+
+    Some(piece_length)
+}
+
+async fn download_piece(
+    stream: &mut TcpStream,
+    state: &mut PeerState,
+    target_piece_index: u32,
+    target_piece_length: u32,
+    expected_hash: [u8; 20],
+    peer_addr: SocketAddr,
+    ui_sender: &mpsc::Sender<CoreMessage>,
+) -> Result<Vec<u8>> {
+    let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
+    let mut telemetry = SessionTelemetry::default();
+    let session_start = Instant::now();
 
     loop {
         if !state.peer_choking {
@@ -65,7 +153,9 @@ pub async fn run_probe_session(
                         telemetry.retries += 1;
                     }
                     telemetry.in_flight_requests = assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
-                    let _ = ui_sender.send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()));
+                    let _ = ui_sender
+                        .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                        .await;
                 } else {
                     break;
                 }
@@ -89,7 +179,8 @@ pub async fn run_probe_session(
                     if index != assembler.piece_index {
                         telemetry.unexpected_blocks += 1;
                         let _ = ui_sender
-                            .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()));
+                            .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                            .await;
                         continue;
                     }
 
@@ -101,7 +192,8 @@ pub async fn run_probe_session(
                             let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
                                 peer_addr,
                                 telemetry.clone(),
-                            ));
+                            ))
+                            .await;
                             continue;
                         }
                         BlockClass::Unexpected => {
@@ -111,7 +203,8 @@ pub async fn run_probe_session(
                             let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
                                 peer_addr,
                                 telemetry.clone(),
-                            ));
+                            ))
+                            .await;
                             continue;
                         }
                         BlockClass::ExpectedNew => {}
@@ -125,7 +218,8 @@ pub async fn run_probe_session(
                             let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
                                 peer_addr,
                                 telemetry.clone(),
-                            ));
+                            ))
+                            .await;
                         }
                         AssemblerState::Error(err) => bail!("assembler error: {err}"),
                         AssemblerState::Complete(buffer) => {
@@ -137,16 +231,12 @@ pub async fn run_probe_session(
                             let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
                                 peer_addr,
                                 telemetry.clone(),
-                            ));
+                            ))
+                            .await;
 
                             let actual_hash = hash_piece(&buffer, HashAlgorithm::Sha1);
                             if actual_hash.as_slice() == expected_hash.as_slice() {
-                                return Ok(format!(
-                                    "Handshake OK | Piece {} verified ({} bytes in {} ms)",
-                                    target_piece_index,
-                                    target_piece_length,
-                                    telemetry.time_to_first_piece_ms.unwrap_or_default()
-                                ));
+                                return Ok(buffer);
                             }
                             bail!("piece hash mismatch for piece {}", target_piece_index);
                         }
@@ -157,7 +247,9 @@ pub async fn run_probe_session(
             Err(_) => {
                 // Read tick timeout is expected. It lets the loop re-run and retry timed-out requests.
                 telemetry.in_flight_requests = assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
-                let _ = ui_sender.send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()));
+                let _ = ui_sender
+                    .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                    .await;
             }
         }
     }

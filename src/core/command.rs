@@ -21,6 +21,8 @@ pub struct SessionTelemetry {
 pub enum CoreMessage {
     Status(String),
     TorrentLoaded(TorrentMeta),
+    GlobalProgress(f32),
+    DownloadComplete,
     PeerFound(SocketAddr),
     TrackerDone(usize),
     ProbeQueued(SocketAddr),

@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
+use crate::core::coordinator::CoordinatorMsg;
 use crate::net::handshake::Handshake;
 use crate::net::session;
 use crate::core::command::CoreMessage;
@@ -14,10 +16,11 @@ pub async fn execute_probe(
     addr: SocketAddr,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
-    target_piece_index: u32,
-    target_piece_length: u32,
-    expected_piece_hash: [u8; 20],
-    ui_sender: &Sender<CoreMessage>,
+    expected_hashes: Arc<Vec<[u8; 20]>>,
+    piece_length: u32,
+    total_length: Option<u64>,
+    ui_sender: mpsc::Sender<CoreMessage>,
+    coord_sender: mpsc::Sender<CoordinatorMsg>,
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
@@ -38,13 +41,16 @@ pub async fn execute_probe(
         bail!("probe failed: remote info_hash mismatch");
     }
 
-    session::run_probe_session(
+    session::run_download_session(
         &mut stream,
-        target_piece_index,
-        target_piece_length,
-        expected_piece_hash,
+        expected_hashes,
+        piece_length,
+        total_length,
         addr,
         ui_sender,
+        coord_sender,
     )
-    .await
+    .await?;
+
+    Ok("Download worker finished".to_string())
 }

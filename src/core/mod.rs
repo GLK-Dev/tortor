@@ -1,6 +1,7 @@
 pub mod assembler;
 pub mod bencode;
 pub mod command;
+pub mod coordinator;
 pub mod disk;
 pub mod manager;
 pub mod peer_id;
