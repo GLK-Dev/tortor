@@ -23,7 +23,7 @@ enum CoreMessage {
     TrackerDone(usize),
     ProbeQueued(SocketAddr),
     ProbeStarted(SocketAddr),
-    ProbeSucceeded(SocketAddr),
+    ProbeSucceeded(SocketAddr, String),
     ProbeFailed(SocketAddr, String),
     Error(String),
 }
@@ -33,7 +33,7 @@ enum ProbeState {
     Idle,
     Queued,
     Probing,
-    Success,
+    Success(String),
     Failed(String),
 }
 
@@ -155,8 +155,8 @@ fn background_task(
                     drop(permit);
 
                     match result {
-                        Ok(()) => {
-                            let _ = tx_clone.send(CoreMessage::ProbeSucceeded(addr));
+                        Ok(status) => {
+                            let _ = tx_clone.send(CoreMessage::ProbeSucceeded(addr, status));
                         }
                         Err(err) => {
                             let _ = tx_clone.send(CoreMessage::ProbeFailed(addr, err.to_string()));
@@ -200,7 +200,7 @@ impl TorTorApp {
             ProbeState::Idle => "idle".to_string(),
             ProbeState::Queued => "queued".to_string(),
             ProbeState::Probing => "probing...".to_string(),
-            ProbeState::Success => "ok".to_string(),
+            ProbeState::Success(msg) => format!("ok: {msg}"),
             ProbeState::Failed(err) => format!("failed: {err}"),
         }
     }
@@ -229,9 +229,9 @@ impl TorTorApp {
                     self.update_peer_state(addr, ProbeState::Probing);
                     self.logs.push(format!("Probe started: {addr}"));
                 }
-                CoreMessage::ProbeSucceeded(addr) => {
-                    self.update_peer_state(addr, ProbeState::Success);
-                    self.logs.push(format!("Probe succeeded: {addr}"));
+                CoreMessage::ProbeSucceeded(addr, status) => {
+                    self.update_peer_state(addr, ProbeState::Success(status.clone()));
+                    self.logs.push(format!("Probe succeeded: {addr} | {status}"));
                 }
                 CoreMessage::ProbeFailed(addr, err) => {
                     self.update_peer_state(addr, ProbeState::Failed(err.clone()));
