@@ -12,6 +12,9 @@ pub async fn execute_probe(
     addr: SocketAddr,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
+    target_piece_index: u32,
+    target_piece_length: u32,
+    expected_piece_hash: [u8; 20],
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
@@ -32,5 +35,11 @@ pub async fn execute_probe(
         bail!("probe failed: remote info_hash mismatch");
     }
 
-    session::run_probe_session(&mut stream).await
+    session::run_probe_session(
+        &mut stream,
+        target_piece_index,
+        target_piece_length,
+        expected_piece_hash,
+    )
+    .await
 }

@@ -82,6 +82,13 @@ pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseErro
         return Err(TorrentParseError::InvalidPiecesLength(pieces_len));
     }
 
+    let mut pieces = Vec::with_capacity(pieces_len / 20);
+    for chunk in raw.info.pieces.chunks_exact(20) {
+        let mut hash = [0u8; 20];
+        hash.copy_from_slice(chunk);
+        pieces.push(hash);
+    }
+
     let pieces_count = (pieces_len / 20) as u32;
 
     Ok(TorrentMeta::new(
@@ -89,6 +96,7 @@ pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseErro
         raw.info.name,
         raw.info.piece_length,
         pieces_count,
+        pieces,
         raw.info.length,
         info_hash,
     ))
@@ -234,6 +242,9 @@ mod tests {
         assert_eq!(parsed.name, "test.bin");
         assert_eq!(parsed.piece_length, 16384);
         assert_eq!(parsed.pieces_count, 1);
+        assert_eq!(parsed.pieces.len(), 1);
+        assert_eq!(parsed.piece_hash(0), Some(*b"12345678901234567890"));
+        assert_eq!(parsed.piece_len_at(0), Some(12345));
         assert_eq!(parsed.total_length, Some(12345));
         assert_eq!(parsed.info_hash, crate::crypto::core::hash_sha1(expected_info));
     }

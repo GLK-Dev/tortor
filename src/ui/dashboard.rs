@@ -112,6 +112,28 @@ fn background_task(
     ))
     .ok();
 
+    let target_piece_index = 0u32;
+    let expected_piece_hash = match meta.piece_hash(target_piece_index as usize) {
+        Some(hash) => hash,
+        None => {
+            tx.send(CoreMessage::Status(
+                "Torrent has no piece hashes; probe data-path disabled".to_string(),
+            ))
+            .ok();
+            return Ok(());
+        }
+    };
+    let target_piece_length = match meta.piece_len_at(target_piece_index as usize) {
+        Some(len) if len > 0 => len,
+        _ => {
+            tx.send(CoreMessage::Status(
+                "Unable to determine target piece length; probe data-path disabled".to_string(),
+            ))
+            .ok();
+            return Ok(());
+        }
+    };
+
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES));
     tx.send(CoreMessage::Status(format!(
         "Probe limiter enabled: max {MAX_CONCURRENT_PROBES} concurrent probes"
@@ -127,6 +149,9 @@ fn background_task(
                 let sem_clone = Arc::clone(&semaphore);
                 let info_hash = meta.info_hash;
                 let probe_peer_id = peer_id;
+                let piece_index = target_piece_index;
+                let piece_length = target_piece_length;
+                let piece_hash = expected_piece_hash;
 
                 runtime.spawn(async move {
                     let permit = match timeout(PROBE_QUEUE_TIMEOUT, sem_clone.acquire_owned()).await {
@@ -151,7 +176,15 @@ fn background_task(
                     };
 
                     let _ = tx_clone.send(CoreMessage::ProbeStarted(addr));
-                    let result = probe::execute_probe(addr, info_hash, probe_peer_id).await;
+                    let result = probe::execute_probe(
+                        addr,
+                        info_hash,
+                        probe_peer_id,
+                        piece_index,
+                        piece_length,
+                        piece_hash,
+                    )
+                    .await;
                     drop(permit);
 
                     match result {
