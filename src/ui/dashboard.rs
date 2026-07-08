@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
-use eframe::egui;
+use eframe::egui::{self, Color32, RichText};
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
@@ -320,6 +320,21 @@ impl eframe::App for TorTorApp {
                         if let Some(tel) = &row.telemetry {
                             let progress = (tel.downloaded_bytes as f32 / piece_len as f32)
                                 .clamp(0.0, 1.0);
+                            let drops = tel.unexpected_blocks + tel.duplicate_blocks;
+
+                            let drop_color = if drops > 10 {
+                                Color32::RED
+                            } else if drops > 0 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::GREEN
+                            };
+
+                            let retry_color = if tel.retries > 5 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::LIGHT_GRAY
+                            };
 
                             ui.horizontal(|ui| {
                                 ui.add(
@@ -336,13 +351,20 @@ impl eframe::App for TorTorApp {
                                     .map(|v| format!(" | TTFP: {} ms", v))
                                     .unwrap_or_default();
 
-                                ui.label(format!(
-                                    "In-flight: {} | Retries: {} | Drops: {}{}",
-                                    tel.in_flight_requests,
-                                    tel.retries,
-                                    tel.unexpected_blocks + tel.duplicate_blocks,
-                                    ttfp
-                                ));
+                                ui.label(
+                                    RichText::new(format!("In-flight: {}", tel.in_flight_requests))
+                                        .color(Color32::LIGHT_BLUE),
+                                );
+                                ui.label("|");
+                                ui.label(
+                                    RichText::new(format!("Retries: {}", tel.retries))
+                                        .color(retry_color),
+                                );
+                                ui.label("|");
+                                ui.label(RichText::new(format!("Drops: {}", drops)).color(drop_color));
+                                if !ttfp.is_empty() {
+                                    ui.label(ttfp);
+                                }
                             });
                         }
 
