@@ -36,21 +36,24 @@ struct PeerRow {
     telemetry: Option<SessionTelemetry>,
 }
 
-pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
+pub fn run_dashboard(initial_torrent_path: Option<PathBuf>, listen_port: u16) -> Result<()> {
     let (msg_tx, msg_rx) = mpsc::channel::<CoreMessage>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
-
-    std::thread::spawn(move || {
-        if let Err(err) = background_task(msg_tx.clone(), cmd_rx, torrent_path, listen_port) {
-            let _ = msg_tx.send(CoreMessage::Error(err.to_string()));
-        }
-    });
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "TorTor Dashboard",
         native_options,
-        Box::new(move |_| Ok(Box::new(TorTorApp::new(msg_rx, cmd_tx.clone())))),
+        Box::new(move |_| {
+            Ok(Box::new(TorTorApp::new(
+                msg_tx.clone(),
+                msg_rx,
+                cmd_tx.clone(),
+                cmd_rx,
+                initial_torrent_path.clone(),
+                listen_port,
+            )))
+        }),
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
 
@@ -188,12 +191,16 @@ fn background_task(
                 let coord_tx = coord_tx.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 let available = available_peers.clone();
+                let tracker_url_for_swarm = tracker_url.clone();
 
                 runtime.spawn(async move {
                     swarm::run_swarm_manager(
                         available,
+                        tracker_url_for_swarm,
                         info_hash,
                         swarm_peer_id,
+                        listen_port,
+                        left,
                         expected_hashes,
                         piece_length,
                         total_length,
@@ -266,8 +273,10 @@ fn background_task(
 }
 
 struct TorTorApp {
+    tx: Sender<CoreMessage>,
     rx: Receiver<CoreMessage>,
     command_tx: Sender<CoreCommand>,
+    command_rx: Option<Receiver<CoreCommand>>,
     peers: Vec<PeerRow>,
     logs: Vec<String>,
     meta: Option<TorrentMeta>,
@@ -275,13 +284,25 @@ struct TorTorApp {
     status: String,
     is_shutting_down: bool,
     swarm_started: bool,
+    core_started: bool,
+    listen_port: u16,
+    selected_torrent: Option<PathBuf>,
 }
 
 impl TorTorApp {
-    fn new(rx: Receiver<CoreMessage>, command_tx: Sender<CoreCommand>) -> Self {
-        Self {
+    fn new(
+        tx: Sender<CoreMessage>,
+        rx: Receiver<CoreMessage>,
+        command_tx: Sender<CoreCommand>,
+        command_rx: Receiver<CoreCommand>,
+        initial_torrent_path: Option<PathBuf>,
+        listen_port: u16,
+    ) -> Self {
+        let mut app = Self {
+            tx,
             rx,
             command_tx,
+            command_rx: Some(command_rx),
             peers: Vec::new(),
             logs: vec!["GUI started. Waiting for core events...".to_string()],
             meta: None,
@@ -289,11 +310,52 @@ impl TorTorApp {
             status: "Ready".to_string(),
             is_shutting_down: false,
             swarm_started: false,
+            core_started: false,
+            listen_port,
+            selected_torrent: None,
+        };
+
+        if let Some(path) = initial_torrent_path {
+            app.start_core(path);
         }
+
+        app
+    }
+
+    fn start_core(&mut self, torrent_path: PathBuf) {
+        if self.core_started {
+            return;
+        }
+
+        let Some(command_rx) = self.command_rx.take() else {
+            self.logs
+                .push("Core command channel is unavailable".to_string());
+            return;
+        };
+
+        let tx = self.tx.clone();
+        let listen_port = self.listen_port;
+        let selected = torrent_path.clone();
+        self.selected_torrent = Some(selected.clone());
+        self.status = format!("Starting core for {}", selected.display());
+        self.logs
+            .push(format!("Loading torrent: {}", selected.display()));
+
+        std::thread::spawn(move || {
+            if let Err(err) = background_task(tx.clone(), command_rx, selected, listen_port) {
+                let _ = tx.send(CoreMessage::Error(err.to_string()));
+            }
+        });
+
+        self.core_started = true;
     }
 
     fn request_shutdown(&mut self) {
         if self.is_shutting_down {
+            return;
+        }
+
+        if !self.core_started {
             return;
         }
 
@@ -388,7 +450,7 @@ impl TorTorApp {
 
 impl eframe::App for TorTorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.is_shutting_down {
+        if self.core_started && ctx.input(|i| i.viewport().close_requested()) && !self.is_shutting_down {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.request_shutdown();
         }
@@ -412,6 +474,34 @@ impl eframe::App for TorTorApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if !self.core_started {
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("TorTor");
+                        ui.label("Select a .torrent file to start");
+                        ui.add_space(12.0);
+
+                        if ui
+                            .add(egui::Button::new("Open .torrent file").min_size(egui::vec2(220.0, 42.0)))
+                            .clicked()
+                        {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Torrent Files", &["torrent"])
+                                .pick_file()
+                            {
+                                self.start_core(path);
+                            }
+                        }
+
+                        if let Some(path) = &self.selected_torrent {
+                            ui.add_space(8.0);
+                            ui.label(format!("Selected: {}", path.display()));
+                        }
+                    });
+                });
+                return;
+            }
+
             ui.heading("TorTor Core Dashboard");
             ui.label(format!("Status: {}", self.status));
             if ui
@@ -421,7 +511,7 @@ impl eframe::App for TorTorApp {
                 self.swarm_started = true;
                 let _ = self.command_tx.send(CoreCommand::StartSwarm);
             }
-            if ui.button("Stop All").clicked() {
+            if ui.add_enabled(self.core_started, egui::Button::new("Stop All")).clicked() {
                 self.request_shutdown();
             }
             ui.separator();

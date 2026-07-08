@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -18,7 +20,7 @@ use tortor::ui::dashboard;
 struct Args {
     /// Path to .torrent file
     #[arg(short, long)]
-    torrent: PathBuf,
+    torrent: Option<PathBuf>,
 
     /// Enable verbose logging (debug level)
     #[arg(short, long, default_value_t = false)]
@@ -39,18 +41,19 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let run_gui = args.gui || (args.torrent.is_none() && std::env::args().len() == 1);
 
     let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
     #[cfg(feature = "gui")]
-    if args.gui {
+    if run_gui {
         let port = args.listen_port.unwrap_or(6881);
-        return dashboard::run_dashboard(args.torrent, port);
+        return dashboard::run_dashboard(args.torrent.clone(), port);
     }
 
     #[cfg(not(feature = "gui"))]
-    if args.gui {
+    if run_gui {
         anyhow::bail!("GUI mode requires building with --features gui");
     }
 
@@ -62,12 +65,16 @@ fn main() -> Result<()> {
 }
 
 async fn run_cli(args: Args) -> Result<()> {
+    let torrent_path = args
+        .torrent
+        .clone()
+        .context("CLI mode requires --torrent <path-to-file.torrent>")?;
 
     info!("Starting TorTor CLI");
-    info!("Reading torrent file: {:?}", args.torrent);
+    info!("Reading torrent file: {:?}", torrent_path);
 
-    let meta = bencode::parse_torrent_file(&args.torrent)
-        .with_context(|| format!("Failed to parse torrent file: {:?}", args.torrent))?;
+    let meta = bencode::parse_torrent_file(&torrent_path)
+        .with_context(|| format!("Failed to parse torrent file: {:?}", torrent_path))?;
 
     info!("Torrent metadata loaded successfully");
     println!("Name         : {}", meta.name);

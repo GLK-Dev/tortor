@@ -6,20 +6,25 @@ use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
-use tracing::warn;
+use tracing::{error, info, warn};
 
 use crate::core::command::CoreMessage;
 use crate::core::coordinator::CoordinatorMsg;
 use crate::net::probe;
+use crate::net::tracker;
 
 const MAX_ACTIVE_PEERS: usize = 30;
 const SWARM_TICK_SECS: u64 = 5;
 const PEER_IDLE_TIMEOUT_SECS: u64 = 60;
+const PEER_THRESHOLD: usize = 5;
+const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub enum SwarmEvent {
     PeerProgress(SocketAddr, u32),
     PeerExited(SocketAddr),
+    TrackerPeersReceived(Vec<SocketAddr>),
+    TrackerAnnounceFailed(String),
 }
 
 struct ActivePeer {
@@ -28,10 +33,23 @@ struct ActivePeer {
     handle: JoinHandle<()>,
 }
 
-pub async fn run_swarm_manager(
-    mut available_peers: VecDeque<SocketAddr>,
+struct SwarmState {
+    last_announce: Option<Instant>,
+    announce_in_progress: bool,
+    tracker_url: String,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
+    listen_port: u16,
+    left_hint: u64,
+}
+
+pub async fn run_swarm_manager(
+    mut available_peers: VecDeque<SocketAddr>,
+    tracker_url: String,
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+    listen_port: u16,
+    left_hint: u64,
     expected_hashes: Arc<Vec<[u8; 20]>>,
     piece_length: u32,
     total_length: Option<u64>,
@@ -43,6 +61,15 @@ pub async fn run_swarm_manager(
     let mut tick = interval(Duration::from_secs(SWARM_TICK_SECS));
     let mut shutdown_rx = shutdown_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
+    let mut swarm_state = SwarmState {
+        last_announce: None,
+        announce_in_progress: false,
+        tracker_url,
+        info_hash,
+        peer_id,
+        listen_port,
+        left_hint,
+    };
 
     let _ = ui_sender
         .send(CoreMessage::Status(format!(
@@ -67,6 +94,37 @@ pub async fn run_swarm_manager(
                         }
                         SwarmEvent::PeerExited(addr) => {
                             active.remove(&addr);
+                        }
+                        SwarmEvent::TrackerPeersReceived(addrs) => {
+                            swarm_state.announce_in_progress = false;
+                            let mut added = 0usize;
+
+                            for addr in addrs {
+                                if active.contains_key(&addr) || available_peers.contains(&addr) {
+                                    continue;
+                                }
+                                available_peers.push_back(addr);
+                                added += 1;
+                            }
+
+                            info!("tracker re-announce added {} peers", added);
+                            let _ = ui_sender
+                                .send(CoreMessage::Status(format!(
+                                    "Re-announce added {} peers | queued: {}",
+                                    added,
+                                    available_peers.len()
+                                )))
+                                .await;
+                        }
+                        SwarmEvent::TrackerAnnounceFailed(err_msg) => {
+                            swarm_state.announce_in_progress = false;
+                            error!("tracker re-announce failed: {}", err_msg);
+                            let _ = ui_sender
+                                .send(CoreMessage::Status(format!(
+                                    "Re-announce failed: {}",
+                                    err_msg
+                                )))
+                                .await;
                         }
                     }
                 }
@@ -162,6 +220,16 @@ pub async fn run_swarm_manager(
                     .await;
             }
         }
+
+        if should_reannounce(&swarm_state, available_peers.len(), active.len()) {
+            start_reannounce(&mut swarm_state, event_tx.clone());
+            let _ = ui_sender
+                .send(CoreMessage::Status(format!(
+                    "Peer queue low ({}). Running re-announce...",
+                    available_peers.len()
+                )))
+                .await;
+        }
     }
 
     for (_, peer) in active {
@@ -171,4 +239,42 @@ pub async fn run_swarm_manager(
     let _ = ui_sender
         .send(CoreMessage::Status("Swarm manager stopped".to_string()))
         .await;
+}
+
+fn should_reannounce(state: &SwarmState, available_len: usize, active_len: usize) -> bool {
+    if state.announce_in_progress {
+        return false;
+    }
+
+    if available_len >= PEER_THRESHOLD && active_len >= PEER_THRESHOLD {
+        return false;
+    }
+
+    state
+        .last_announce
+        .map(|t| t.elapsed() >= MIN_ANNOUNCE_INTERVAL)
+        .unwrap_or(true)
+}
+
+fn start_reannounce(state: &mut SwarmState, event_tx: mpsc::UnboundedSender<SwarmEvent>) {
+    state.announce_in_progress = true;
+    state.last_announce = Some(Instant::now());
+
+    let tracker_url = state.tracker_url.clone();
+    let info_hash = state.info_hash;
+    let peer_id = state.peer_id;
+    let listen_port = state.listen_port;
+    let left_hint = state.left_hint;
+
+    tokio::spawn(async move {
+        match tracker::announce(&tracker_url, &info_hash, &peer_id, listen_port, left_hint).await {
+            Ok(peers) => {
+                let addrs = peers.into_iter().map(|p| p.addr).collect();
+                let _ = event_tx.send(SwarmEvent::TrackerPeersReceived(addrs));
+            }
+            Err(err) => {
+                let _ = event_tx.send(SwarmEvent::TrackerAnnounceFailed(err.to_string()));
+            }
+        }
+    });
 }
