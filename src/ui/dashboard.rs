@@ -1,29 +1,50 @@
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::net::SocketAddr;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
 use eframe::egui;
 
 use crate::core::bencode;
+use crate::core::command::CoreCommand;
 use crate::core::peer_id::generate_peer_id;
 use crate::core::torrent::TorrentMeta;
+use crate::net::probe;
 use crate::net::tracker;
 
 #[derive(Debug)]
 enum CoreMessage {
     Status(String),
     TorrentLoaded(TorrentMeta),
-    PeerFound(String),
+    PeerFound(SocketAddr),
     TrackerDone(usize),
+    ProbeStarted(SocketAddr),
+    ProbeSucceeded(SocketAddr),
+    ProbeFailed(SocketAddr, String),
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+enum ProbeState {
+    Idle,
+    Probing,
+    Success,
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+struct PeerRow {
+    addr: SocketAddr,
+    state: ProbeState,
+}
+
 pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<CoreMessage>();
+    let (msg_tx, msg_rx) = mpsc::channel::<CoreMessage>();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
 
     std::thread::spawn(move || {
-        if let Err(err) = background_task(tx.clone(), torrent_path, listen_port) {
-            let _ = tx.send(CoreMessage::Error(err.to_string()));
+        if let Err(err) = background_task(msg_tx.clone(), cmd_rx, torrent_path, listen_port) {
+            let _ = msg_tx.send(CoreMessage::Error(err.to_string()));
         }
     });
 
@@ -31,7 +52,7 @@ pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
     eframe::run_native(
         "TorTor Dashboard",
         native_options,
-        Box::new(move |_| Ok(Box::new(TorTorApp::new(rx)))),
+        Box::new(move |_| Ok(Box::new(TorTorApp::new(msg_rx, cmd_tx.clone())))),
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
 
@@ -40,6 +61,7 @@ pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
 
 fn background_task(
     tx: mpsc::Sender<CoreMessage>,
+    command_rx: Receiver<CoreCommand>,
     torrent_path: PathBuf,
     listen_port: u16,
 ) -> Result<()> {
@@ -74,27 +96,68 @@ fn background_task(
     })?;
 
     for peer in &peers {
-        tx.send(CoreMessage::PeerFound(peer.addr.to_string())).ok();
+        tx.send(CoreMessage::PeerFound(peer.addr)).ok();
     }
     tx.send(CoreMessage::TrackerDone(peers.len())).ok();
+    tx.send(CoreMessage::Status(
+        "Core worker is ready for probe commands".to_string(),
+    ))
+    .ok();
+
+    while let Ok(command) = command_rx.recv() {
+        match command {
+            CoreCommand::ProbePeer(addr) => {
+                tx.send(CoreMessage::ProbeStarted(addr)).ok();
+                let result = runtime.block_on(async {
+                    probe::execute_probe(addr, meta.info_hash, peer_id).await
+                });
+
+                match result {
+                    Ok(()) => {
+                        tx.send(CoreMessage::ProbeSucceeded(addr)).ok();
+                    }
+                    Err(err) => {
+                        tx.send(CoreMessage::ProbeFailed(addr, err.to_string())).ok();
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
 
 struct TorTorApp {
     rx: Receiver<CoreMessage>,
-    peers: Vec<String>,
+    command_tx: Sender<CoreCommand>,
+    peers: Vec<PeerRow>,
     logs: Vec<String>,
     meta: Option<TorrentMeta>,
 }
 
 impl TorTorApp {
-    fn new(rx: Receiver<CoreMessage>) -> Self {
+    fn new(rx: Receiver<CoreMessage>, command_tx: Sender<CoreCommand>) -> Self {
         Self {
             rx,
+            command_tx,
             peers: Vec::new(),
             logs: vec!["GUI started. Waiting for core events...".to_string()],
             meta: None,
+        }
+    }
+
+    fn update_peer_state(&mut self, addr: SocketAddr, state: ProbeState) {
+        if let Some(row) = self.peers.iter_mut().find(|row| row.addr == addr) {
+            row.state = state;
+        }
+    }
+
+    fn status_label(state: &ProbeState) -> String {
+        match state {
+            ProbeState::Idle => "idle".to_string(),
+            ProbeState::Probing => "probing...".to_string(),
+            ProbeState::Success => "ok".to_string(),
+            ProbeState::Failed(err) => format!("failed: {err}"),
         }
     }
 
@@ -107,9 +170,24 @@ impl TorTorApp {
                         .push(format!("Loaded torrent: {}", meta.name));
                     self.meta = Some(meta);
                 }
-                CoreMessage::PeerFound(addr) => self.peers.push(addr),
+                CoreMessage::PeerFound(addr) => self.peers.push(PeerRow {
+                    addr,
+                    state: ProbeState::Idle,
+                }),
                 CoreMessage::TrackerDone(count) => {
                     self.logs.push(format!("Tracker returned {count} peers"));
+                }
+                CoreMessage::ProbeStarted(addr) => {
+                    self.update_peer_state(addr, ProbeState::Probing);
+                    self.logs.push(format!("Probe started: {addr}"));
+                }
+                CoreMessage::ProbeSucceeded(addr) => {
+                    self.update_peer_state(addr, ProbeState::Success);
+                    self.logs.push(format!("Probe succeeded: {addr}"));
+                }
+                CoreMessage::ProbeFailed(addr, err) => {
+                    self.update_peer_state(addr, ProbeState::Failed(err.clone()));
+                    self.logs.push(format!("Probe failed for {addr}: {err}"));
                 }
                 CoreMessage::Error(err) => {
                     self.logs.push(format!("Error: {err}"));
@@ -141,8 +219,22 @@ impl eframe::App for TorTorApp {
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .show(ui, |ui| {
-                    for peer in &self.peers {
-                        ui.label(peer);
+                    for row in &self.peers {
+                        let addr = row.addr;
+                        let state_text = Self::status_label(&row.state);
+                        let can_probe = !matches!(row.state, ProbeState::Probing);
+
+                        ui.horizontal(|ui| {
+                            ui.monospace(addr.to_string());
+                            ui.label(state_text);
+
+                            if ui
+                                .add_enabled(can_probe, egui::Button::new("Start Probe"))
+                                .clicked()
+                            {
+                                let _ = self.command_tx.send(CoreCommand::ProbePeer(addr));
+                            }
+                        });
                     }
                 });
 
