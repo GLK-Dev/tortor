@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
 use eframe::egui;
+use tokio::sync::Semaphore;
+use tokio::time::{timeout, Duration};
 
 use crate::core::bencode;
 use crate::core::command::CoreCommand;
@@ -18,6 +21,7 @@ enum CoreMessage {
     TorrentLoaded(TorrentMeta),
     PeerFound(SocketAddr),
     TrackerDone(usize),
+    ProbeQueued(SocketAddr),
     ProbeStarted(SocketAddr),
     ProbeSucceeded(SocketAddr),
     ProbeFailed(SocketAddr, String),
@@ -27,6 +31,7 @@ enum CoreMessage {
 #[derive(Debug, Clone)]
 enum ProbeState {
     Idle,
+    Queued,
     Probing,
     Success,
     Failed(String),
@@ -37,6 +42,9 @@ struct PeerRow {
     addr: SocketAddr,
     state: ProbeState,
 }
+
+const MAX_CONCURRENT_PROBES: usize = 10;
+const PROBE_QUEUE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn run_dashboard(torrent_path: PathBuf, listen_port: u16) -> Result<()> {
     let (msg_tx, msg_rx) = mpsc::channel::<CoreMessage>();
@@ -104,22 +112,57 @@ fn background_task(
     ))
     .ok();
 
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES));
+    tx.send(CoreMessage::Status(format!(
+        "Probe limiter enabled: max {MAX_CONCURRENT_PROBES} concurrent probes"
+    )))
+    .ok();
+
     while let Ok(command) = command_rx.recv() {
         match command {
             CoreCommand::ProbePeer(addr) => {
-                tx.send(CoreMessage::ProbeStarted(addr)).ok();
-                let result = runtime.block_on(async {
-                    probe::execute_probe(addr, meta.info_hash, peer_id).await
-                });
+                tx.send(CoreMessage::ProbeQueued(addr)).ok();
 
-                match result {
-                    Ok(()) => {
-                        tx.send(CoreMessage::ProbeSucceeded(addr)).ok();
+                let tx_clone = tx.clone();
+                let sem_clone = Arc::clone(&semaphore);
+                let info_hash = meta.info_hash;
+                let probe_peer_id = peer_id;
+
+                runtime.spawn(async move {
+                    let permit = match timeout(PROBE_QUEUE_TIMEOUT, sem_clone.acquire_owned()).await {
+                        Ok(Ok(permit)) => permit,
+                        Ok(Err(_)) => {
+                            let _ = tx_clone.send(CoreMessage::ProbeFailed(
+                                addr,
+                                "probe limiter closed".to_string(),
+                            ));
+                            return;
+                        }
+                        Err(_) => {
+                            let _ = tx_clone.send(CoreMessage::ProbeFailed(
+                                addr,
+                                format!(
+                                    "queue timeout after {}s",
+                                    PROBE_QUEUE_TIMEOUT.as_secs()
+                                ),
+                            ));
+                            return;
+                        }
+                    };
+
+                    let _ = tx_clone.send(CoreMessage::ProbeStarted(addr));
+                    let result = probe::execute_probe(addr, info_hash, probe_peer_id).await;
+                    drop(permit);
+
+                    match result {
+                        Ok(()) => {
+                            let _ = tx_clone.send(CoreMessage::ProbeSucceeded(addr));
+                        }
+                        Err(err) => {
+                            let _ = tx_clone.send(CoreMessage::ProbeFailed(addr, err.to_string()));
+                        }
                     }
-                    Err(err) => {
-                        tx.send(CoreMessage::ProbeFailed(addr, err.to_string())).ok();
-                    }
-                }
+                });
             }
         }
     }
@@ -155,6 +198,7 @@ impl TorTorApp {
     fn status_label(state: &ProbeState) -> String {
         match state {
             ProbeState::Idle => "idle".to_string(),
+            ProbeState::Queued => "queued".to_string(),
             ProbeState::Probing => "probing...".to_string(),
             ProbeState::Success => "ok".to_string(),
             ProbeState::Failed(err) => format!("failed: {err}"),
@@ -176,6 +220,10 @@ impl TorTorApp {
                 }),
                 CoreMessage::TrackerDone(count) => {
                     self.logs.push(format!("Tracker returned {count} peers"));
+                }
+                CoreMessage::ProbeQueued(addr) => {
+                    self.update_peer_state(addr, ProbeState::Queued);
+                    self.logs.push(format!("Probe queued: {addr}"));
                 }
                 CoreMessage::ProbeStarted(addr) => {
                     self.update_peer_state(addr, ProbeState::Probing);
