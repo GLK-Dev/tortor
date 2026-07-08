@@ -26,6 +26,29 @@ impl TorrentManager {
         }
     }
 
+    pub fn from_completed(total_pieces: u32, completed_pieces: &[u32]) -> Self {
+        let mut completed: HashSet<u32> = completed_pieces
+            .iter()
+            .copied()
+            .filter(|idx| *idx < total_pieces)
+            .collect();
+
+        if completed.len() as u32 > total_pieces {
+            completed.clear();
+        }
+
+        let missing: VecDeque<u32> = (0..total_pieces)
+            .filter(|idx| !completed.contains(idx))
+            .collect();
+
+        Self {
+            total_pieces,
+            missing,
+            in_progress: HashSet::new(),
+            completed,
+        }
+    }
+
     pub fn get_next_work(&mut self) -> Option<u32> {
         if let Some(piece) = self.missing.pop_front() {
             self.in_progress.insert(piece);
@@ -56,6 +79,16 @@ impl TorrentManager {
 
     pub fn is_done(&self) -> bool {
         self.completed.len() as u32 == self.total_pieces
+    }
+
+    pub fn completed_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    pub fn completed_pieces(&self) -> Vec<u32> {
+        let mut pieces: Vec<u32> = self.completed.iter().copied().collect();
+        pieces.sort_unstable();
+        pieces
     }
 
     pub fn piece_state(&self, piece_index: u32) -> Option<PieceState> {
@@ -96,5 +129,15 @@ mod tests {
         mgr.mark_completed(1);
         assert!(mgr.progress() > 0.0);
         assert_eq!(mgr.piece_state(1), Some(PieceState::Downloaded));
+    }
+
+    #[test]
+    fn manager_restores_from_completed() {
+        let mgr = TorrentManager::from_completed(4, &[1, 3, 9]);
+        assert_eq!(mgr.completed_count(), 2);
+        assert_eq!(mgr.piece_state(1), Some(PieceState::Downloaded));
+        assert_eq!(mgr.piece_state(3), Some(PieceState::Downloaded));
+        assert_eq!(mgr.piece_state(0), Some(PieceState::Missing));
+        assert_eq!(mgr.piece_state(2), Some(PieceState::Missing));
     }
 }

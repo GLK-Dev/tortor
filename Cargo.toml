@@ -16,6 +16,7 @@ gui = ["dep:eframe"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_bencode = "0.2"
 serde_bytes = "0.11"
 clap = { version = "4.4", features = ["derive"] }

@@ -5,6 +5,7 @@ use crate::core::torrent::TorrentMeta;
 #[derive(Debug, Clone, Copy)]
 pub enum CoreCommand {
     ProbePeer(SocketAddr),
+    StopAll,
 }
 
 #[derive(Debug, Clone, Default)]

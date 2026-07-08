@@ -5,4 +5,5 @@ pub mod coordinator;
 pub mod disk;
 pub mod manager;
 pub mod peer_id;
+pub mod resume;
 pub mod torrent;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 
 use crate::core::coordinator::CoordinatorMsg;
@@ -21,6 +21,7 @@ pub async fn execute_probe(
     total_length: Option<u64>,
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
+    shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
@@ -49,6 +50,7 @@ pub async fn execute_probe(
         addr,
         ui_sender,
         coord_sender,
+        shutdown_rx,
     )
     .await?;
 

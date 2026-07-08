@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::info;
 
 use crate::core::assembler::{AssemblerState, BlockClass, PieceAssembler};
 use crate::core::coordinator::CoordinatorMsg;
@@ -42,6 +43,7 @@ pub async fn run_download_session(
     peer_addr: SocketAddr,
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let mut state = PeerState::new();
 
@@ -60,9 +62,12 @@ pub async fn run_download_session(
             break;
         }
 
-        let target_piece_index = match work_rx.await {
-            Ok(Some(index)) => index,
-            _ => break,
+        let target_piece_index = match tokio::select! {
+            _ = shutdown_rx.recv() => None,
+            reply = work_rx => reply.ok().flatten(),
+        } {
+            Some(index) => index,
+            None => break,
         };
 
         let expected_hash = match expected_hashes.get(target_piece_index as usize) {
@@ -86,11 +91,12 @@ pub async fn run_download_session(
             expected_hash,
             peer_addr,
             &ui_sender,
+            &mut shutdown_rx,
         )
         .await;
 
         match piece_result {
-            Ok(buffer) => {
+            Ok(PieceOutcome::Completed(buffer)) => {
                 if coord_sender
                     .send(CoordinatorMsg::PieceDownloaded(target_piece_index, buffer))
                     .await
@@ -98,6 +104,12 @@ pub async fn run_download_session(
                 {
                     break;
                 }
+            }
+            Ok(PieceOutcome::Shutdown) => {
+                let _ = coord_sender
+                    .send(CoordinatorMsg::PieceFailed(target_piece_index))
+                    .await;
+                break;
             }
             Err(err) => {
                 let _ = coord_sender
@@ -109,6 +121,11 @@ pub async fn run_download_session(
     }
 
     Ok(())
+}
+
+enum PieceOutcome {
+    Completed(Vec<u8>),
+    Shutdown,
 }
 
 fn piece_len_at(index: u32, piece_length: u32, total_length: Option<u64>) -> Option<u32> {
@@ -133,7 +150,8 @@ async fn download_piece(
     expected_hash: [u8; 20],
     peer_addr: SocketAddr,
     ui_sender: &mpsc::Sender<CoreMessage>,
-) -> Result<Vec<u8>> {
+    shutdown_rx: &mut broadcast::Receiver<()>,
+) -> Result<PieceOutcome> {
     let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
     let mut telemetry = SessionTelemetry::default();
     let session_start = Instant::now();
@@ -162,7 +180,13 @@ async fn download_piece(
             }
         }
 
-        let read_result = timeout(READ_TICK, PeerMessage::read_from(stream)).await;
+        let read_result = tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("download session for {} received shutdown signal", peer_addr);
+                return Ok(PieceOutcome::Shutdown);
+            }
+            result = timeout(READ_TICK, PeerMessage::read_from(stream)) => result,
+        };
         match read_result {
             Ok(Ok(msg)) => match msg {
                 PeerMessage::KeepAlive => {}
@@ -236,7 +260,7 @@ async fn download_piece(
 
                             let actual_hash = hash_piece(&buffer, HashAlgorithm::Sha1);
                             if actual_hash.as_slice() == expected_hash.as_slice() {
-                                return Ok(buffer);
+                                return Ok(PieceOutcome::Completed(buffer));
                             }
                             bail!("piece hash mismatch for piece {}", target_piece_index);
                         }

@@ -5,8 +5,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
-use tokio::sync::{mpsc as tokio_mpsc, Semaphore};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{broadcast, mpsc as tokio_mpsc, Semaphore};
+use tokio::time::{sleep, timeout, Duration};
 
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
@@ -14,6 +14,7 @@ use crate::core::coordinator::{self, CoordinatorMsg};
 use crate::core::disk::DiskWriter;
 use crate::core::manager::TorrentManager;
 use crate::core::peer_id::generate_peer_id;
+use crate::core::resume::load_fastresume;
 use crate::core::torrent::TorrentMeta;
 use crate::net::probe;
 use crate::net::tracker;
@@ -112,6 +113,7 @@ fn background_task(
     }
 
     let (ui_async_tx, mut ui_async_rx) = tokio_mpsc::channel::<CoreMessage>(1024);
+    let (shutdown_tx, _) = broadcast::channel::<()>(16);
     let ui_bridge_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(msg) = ui_async_rx.recv().await {
@@ -128,13 +130,35 @@ fn background_task(
         total_size,
         meta.piece_length,
     ))?;
-    let manager = TorrentManager::new(meta.pieces_count);
+    let resume_path = torrent_path.with_extension("fastresume");
+    let manager = match runtime.block_on(load_fastresume(&resume_path)) {
+        Ok(Some(state)) => {
+            let mgr = state.clone().into_manager(meta.pieces_count);
+            tx.send(CoreMessage::Status(format!(
+                "Fast resume loaded: {} completed pieces",
+                mgr.completed_count()
+            )))
+            .ok();
+            mgr
+        }
+        Ok(None) => TorrentManager::new(meta.pieces_count),
+        Err(err) => {
+            tx.send(CoreMessage::Status(format!(
+                "Fast resume load failed, starting fresh: {}",
+                err
+            )))
+            .ok();
+            TorrentManager::new(meta.pieces_count)
+        }
+    };
     let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
     runtime.spawn(coordinator::run_coordinator(
         coord_rx,
         ui_async_tx.clone(),
         manager,
         disk_writer,
+        resume_path,
+        shutdown_tx.subscribe(),
     ));
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES));
@@ -159,6 +183,7 @@ fn background_task(
                 let expected_hashes = Arc::clone(&expected_hashes);
                 let ui_async_tx = ui_async_tx.clone();
                 let coord_tx = coord_tx.clone();
+                let shutdown_rx = shutdown_tx.subscribe();
 
                 runtime.spawn(async move {
                     let permit = match timeout(PROBE_QUEUE_TIMEOUT, sem_clone.acquire_owned()).await {
@@ -192,6 +217,7 @@ fn background_task(
                         total_length,
                         ui_async_tx,
                         coord_tx,
+                        shutdown_rx,
                     )
                     .await;
                     drop(permit);
@@ -205,6 +231,15 @@ fn background_task(
                         }
                     }
                 });
+            }
+            CoreCommand::StopAll => {
+                tx.send(CoreMessage::Status("Stop requested: shutting down workers".to_string()))
+                    .ok();
+                let _ = shutdown_tx.send(());
+                runtime.block_on(async {
+                    sleep(Duration::from_millis(800)).await;
+                });
+                break;
             }
         }
     }
@@ -315,6 +350,9 @@ impl eframe::App for TorTorApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("TorTor Core Dashboard");
             ui.label(format!("Status: {}", self.status));
+            if ui.button("Stop All").clicked() {
+                let _ = self.command_tx.send(CoreCommand::StopAll);
+            }
             ui.separator();
 
             ui.heading("TorTor Global Progress");
