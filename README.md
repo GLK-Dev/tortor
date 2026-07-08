@@ -32,6 +32,12 @@ Run benches:
 cargo bench
 ```
 
+Run GUI dashboard (egui) with tracker peers view:
+
+```bash
+cargo run --features gui -- --torrent <file.torrent> --gui
+```
+
 ## Architecture
 
 TorTor separates responsibilities into focused modules:

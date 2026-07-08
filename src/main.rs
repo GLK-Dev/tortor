@@ -1,13 +1,16 @@
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::{info, warn, Level};
 
 use tortor::core::bencode;
+use tortor::core::peer_id::generate_peer_id;
 use tortor::net::listener;
 use tortor::net::tracker;
+
+#[cfg(feature = "gui")]
+use tortor::ui::dashboard;
 
 /// TorTor - High-performance BitTorrent client
 #[derive(Parser, Debug)]
@@ -28,14 +31,37 @@ struct Args {
     /// Query HTTP tracker and print returned peers
     #[arg(long, default_value_t = false)]
     announce_tracker: bool,
+
+    /// Launch immediate-mode dashboard (requires --features gui)
+    #[arg(long, default_value_t = false)]
+    gui: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
     tracing_subscriber::fmt().with_max_level(log_level).init();
+
+    #[cfg(feature = "gui")]
+    if args.gui {
+        let port = args.listen_port.unwrap_or(6881);
+        return dashboard::run_dashboard(args.torrent, port);
+    }
+
+    #[cfg(not(feature = "gui"))]
+    if args.gui {
+        anyhow::bail!("GUI mode requires building with --features gui");
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to initialize tokio runtime")?;
+    runtime.block_on(run_cli(args))
+}
+
+async fn run_cli(args: Args) -> Result<()> {
 
     info!("Starting TorTor CLI");
     info!("Reading torrent file: {:?}", args.torrent);
@@ -89,32 +115,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn generate_peer_id() -> [u8; 20] {
-    let mut peer_id = [b'0'; 20];
-    let prefix = b"-TT0001-";
-    peer_id[..prefix.len()].copy_from_slice(prefix);
-
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
-        ^ u64::from(std::process::id());
-
-    let tail = format!("{seed:012x}");
-    peer_id[8..20].copy_from_slice(&tail.as_bytes()[..12]);
-    peer_id
-}
-
-#[cfg(test)]
-mod tests {
-    use super::generate_peer_id;
-
-    #[test]
-    fn peer_id_has_expected_shape() {
-        let id = generate_peer_id();
-        assert_eq!(id.len(), 20);
-        assert_eq!(&id[..8], b"-TT0001-");
-    }
 }
