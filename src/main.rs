@@ -1,22 +1,45 @@
-use tortor::crypto::dispatch::{self, HashAlgorithm};
+use std::path::PathBuf;
 
-fn main() {
-    let payload = b"torrent piece example";
+use anyhow::{Context, Result};
+use clap::Parser;
+use tracing::{info, Level};
 
-    let sha1 = dispatch::hash_piece(payload, HashAlgorithm::Sha1);
-    let sha256 = dispatch::hash_piece(payload, HashAlgorithm::Sha256);
+use tortor::core::bencode;
 
-    println!("Selected CPU backend: {:?}", dispatch::detect_backend());
-    println!("SHA-1   : {}", hex::encode(sha1));
-    println!("SHA-256 : {}", hex::encode(sha256));
+/// TorTor - High-performance BitTorrent client
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to .torrent file
+    #[arg(short, long)]
+    torrent: PathBuf,
 
-    #[cfg(feature = "gpu")]
-    {
-        use tortor::crypto::gpu::{GpuHasher, StubGpuHasher};
+    /// Enable verbose logging (debug level)
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
+}
 
-        let gpu = StubGpuHasher::new();
-        if let Err(err) = gpu.hash_sha256_batch(&[payload]) {
-            println!("GPU path is scaffold-only for now: {err}");
-        }
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
+    tracing_subscriber::fmt().with_max_level(log_level).init();
+
+    info!("Starting TorTor CLI");
+    info!("Reading torrent file: {:?}", args.torrent);
+
+    let meta = bencode::parse_torrent_file(&args.torrent)
+        .with_context(|| format!("Failed to parse torrent file: {:?}", args.torrent))?;
+
+    info!("Torrent metadata loaded successfully");
+    println!("Name         : {}", meta.name);
+    println!("Announce     : {}", meta.announce);
+    println!("Piece length : {}", meta.piece_length);
+    println!("Pieces count : {}", meta.pieces_count);
+    match meta.total_length {
+        Some(total) => println!("Total size   : {} bytes", total),
+        None => println!("Total size   : multi-file mode (not yet summarized)"),
     }
+
+    Ok(())
 }
