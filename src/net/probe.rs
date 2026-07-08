@@ -6,7 +6,7 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
 use crate::net::handshake::Handshake;
-use crate::net::wire::PeerMessage;
+use crate::net::session;
 
 pub async fn execute_probe(
     addr: SocketAddr,
@@ -32,20 +32,5 @@ pub async fn execute_probe(
         bail!("probe failed: remote info_hash mismatch");
     }
 
-    let first_msg = timeout(Duration::from_secs(5), PeerMessage::read_from(&mut stream))
-        .await
-        .context("timeout waiting for first wire message")??;
-
-    let status_info = match first_msg {
-        PeerMessage::Bitfield(data) => format!("Bitfield ({} bytes)", data.len()),
-        PeerMessage::Have(idx) => format!("Have piece {idx}"),
-        PeerMessage::Unchoke => "Unchoked immediately".to_string(),
-        msg => format!("Received {:?}", msg),
-    };
-
-    timeout(Duration::from_secs(5), PeerMessage::send_interested(&mut stream))
-        .await
-        .context("timeout while sending Interested")??;
-
-    Ok(format!("Handshake OK | {status_info}"))
+    session::run_probe_session(&mut stream).await
 }

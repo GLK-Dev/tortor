@@ -11,6 +11,8 @@ pub enum PeerMessage {
     NotInterested,
     Have(u32),
     Bitfield(Vec<u8>),
+    Request { index: u32, begin: u32, length: u32 },
+    Piece { index: u32, begin: u32, block: Vec<u8> },
 }
 
 impl PeerMessage {
@@ -65,6 +67,52 @@ impl PeerMessage {
                     .context("failed to read BITFIELD payload")?;
                 Ok(PeerMessage::Bitfield(bitfield))
             }
+            6 => {
+                if payload_len != 12 {
+                    bail!("invalid REQUEST payload length: {payload_len}");
+                }
+                let index = stream
+                    .read_u32()
+                    .await
+                    .context("failed to read REQUEST index")?;
+                let begin = stream
+                    .read_u32()
+                    .await
+                    .context("failed to read REQUEST begin")?;
+                let length = stream
+                    .read_u32()
+                    .await
+                    .context("failed to read REQUEST length")?;
+                Ok(PeerMessage::Request {
+                    index,
+                    begin,
+                    length,
+                })
+            }
+            7 => {
+                if payload_len < 8 {
+                    bail!("invalid PIECE payload length: {payload_len}");
+                }
+                let index = stream
+                    .read_u32()
+                    .await
+                    .context("failed to read PIECE index")?;
+                let begin = stream
+                    .read_u32()
+                    .await
+                    .context("failed to read PIECE begin")?;
+                let block_len = payload_len - 8;
+                let mut block = vec![0u8; block_len];
+                stream
+                    .read_exact(&mut block)
+                    .await
+                    .context("failed to read PIECE block")?;
+                Ok(PeerMessage::Piece {
+                    index,
+                    begin,
+                    block,
+                })
+            }
             _ => {
                 drain_payload(stream, payload_len).await?;
                 bail!("unknown peer message id: {id}")
@@ -78,6 +126,26 @@ impl PeerMessage {
             .write_all(&msg)
             .await
             .context("failed to send Interested message")?;
+        Ok(())
+    }
+
+    pub async fn send_request(
+        stream: &mut TcpStream,
+        index: u32,
+        begin: u32,
+        length: u32,
+    ) -> Result<()> {
+        let mut msg = [0u8; 17];
+        msg[0..4].copy_from_slice(&13u32.to_be_bytes());
+        msg[4] = 6;
+        msg[5..9].copy_from_slice(&index.to_be_bytes());
+        msg[9..13].copy_from_slice(&begin.to_be_bytes());
+        msg[13..17].copy_from_slice(&length.to_be_bytes());
+
+        stream
+            .write_all(&msg)
+            .await
+            .context("failed to send Request message")?;
         Ok(())
     }
 }
