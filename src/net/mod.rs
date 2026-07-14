@@ -5,3 +5,5 @@ pub mod session;
 pub mod swarm;
 pub mod tracker;
 pub mod wire;
+
+pub mod pex;

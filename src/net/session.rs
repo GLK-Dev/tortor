@@ -25,6 +25,7 @@ struct PeerState {
     am_choking: bool,
     peer_choking: bool,
     peer_interested: bool,
+    remote_pex_id: Option<u8>,
 }
 
 impl PeerState {
@@ -34,6 +35,7 @@ impl PeerState {
             am_choking: true,
             peer_choking: true,
             peer_interested: false,
+            remote_pex_id: None,
         }
     }
 }
@@ -56,6 +58,7 @@ pub async fn run_download_session(
     if remote_supports_extensions {
         let mut m = std::collections::HashMap::new();
         m.insert("ut_metadata".to_string(), 1);
+        m.insert("ut_pex".to_string(), 2);
         let ext_dict = ExtendedHandshakeDict { m, metadata_size: None };
         if let Ok(payload) = serde_bencode::to_bytes(&ext_dict) {
             let _ = PeerMessage::send_extended(stream, 0, &payload).await;
@@ -253,6 +256,18 @@ async fn download_piece(
                     if id == 0 {
                         if let Ok(ext_dict) = serde_bencode::from_bytes::<ExtendedHandshakeDict>(&payload) {
                             info!("Extended handshake from {}: {:?}", peer_addr, ext_dict);
+                            if let Some(&remote_pex) = ext_dict.m.get("ut_pex") {
+                                state.remote_pex_id = Some(remote_pex);
+                            }
+                        }
+                    } else if Some(id) == state.remote_pex_id {
+                        if let Ok(pex_msg) = serde_bencode::from_bytes::<crate::net::pex::PexMessage>(&payload) {
+                            let addrs = pex_msg.decode_added_ipv4();
+                            if !addrs.is_empty() {
+                                if let Some(tx) = swarm_event_tx.as_ref() {
+                                    let _ = tx.send(SwarmEvent::PexPeersReceived(addrs));
+                                }
+                            }
                         }
                     }
                 }

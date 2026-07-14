@@ -25,6 +25,7 @@ pub enum SwarmEvent {
     PeerExited(SocketAddr),
     TrackerPeersReceived(Vec<SocketAddr>),
     TrackerAnnounceFailed(String),
+    PexPeersReceived(Vec<SocketAddr>),
 }
 
 struct ActivePeer {
@@ -116,6 +117,26 @@ pub async fn run_swarm_manager(
                                     available_peers.len()
                                 )))
                                 .await;
+                        }
+                        SwarmEvent::PexPeersReceived(addrs) => {
+                            let mut added = 0usize;
+                            for addr in addrs {
+                                if active.contains_key(&addr) || available_peers.contains(&addr) {
+                                    continue;
+                                }
+                                available_peers.push_back(addr);
+                                added += 1;
+                            }
+                            if added > 0 {
+                                info!("PEX discovered {} new peers", added);
+                                let _ = ui_sender
+                                    .send(CoreMessage::Status(format!(
+                                        "PEX added {} peers | queued: {}",
+                                        added,
+                                        available_peers.len()
+                                    )))
+                                    .await;
+                            }
                         }
                         SwarmEvent::TrackerAnnounceFailed(err_msg) => {
                             swarm_state.announce_in_progress = false;
