@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeId(pub [u8; 20]);
 
 impl NodeId {

@@ -26,6 +26,7 @@ pub enum SwarmEvent {
     TrackerPeersReceived(Vec<SocketAddr>),
     TrackerAnnounceFailed(String),
     PexPeersReceived(Vec<SocketAddr>),
+    DhtPeersReceived(Vec<SocketAddr>),
 }
 
 struct ActivePeer {
@@ -64,6 +65,13 @@ pub async fn run_swarm_manager(
     let mut pex_tick = interval(Duration::from_secs(60));
     let mut shutdown_rx = shutdown_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
+    
+    // Initialize DHT Manager
+    if let Ok((dht_manager, dht_cmd_tx)) = crate::net::dht::actor::DhtManager::new(6881, event_tx.clone()).await {
+        tokio::spawn(dht_manager.run());
+        let _ = dht_cmd_tx.send(crate::net::dht::actor::DhtManagerCommand::StartSearch(crate::net::dht::routing::NodeId(info_hash))).await;
+    }
+
     let mut swarm_state = SwarmState {
         last_announce: None,
         announce_in_progress: false,
@@ -133,6 +141,26 @@ pub async fn run_swarm_manager(
                                 let _ = ui_sender
                                     .send(CoreMessage::Status(format!(
                                         "PEX added {} peers | queued: {}",
+                                        added,
+                                        available_peers.len()
+                                    )))
+                                    .await;
+                            }
+                        }
+                        SwarmEvent::DhtPeersReceived(addrs) => {
+                            let mut added = 0usize;
+                            for addr in addrs {
+                                if active.contains_key(&addr) || available_peers.contains(&addr) {
+                                    continue;
+                                }
+                                available_peers.push_back(addr);
+                                added += 1;
+                            }
+                            if added > 0 {
+                                info!("DHT discovered {} new peers", added);
+                                let _ = ui_sender
+                                    .send(CoreMessage::Status(format!(
+                                        "DHT added {} peers | queued: {}",
                                         added,
                                         available_peers.len()
                                     )))
