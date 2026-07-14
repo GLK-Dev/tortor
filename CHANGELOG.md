@@ -1,5 +1,10 @@
 # Changelog - TorTor
 
+## [1.3.0] - 2026-07-14
+
+### Core Architecture
+- **Choke/Unchoke State Machine:** Implemented strict peer state management. TorTor now protects the disk pipeline from unbounded requests by only serving pieces to explicitly unchoked peers that have shown interest.
+
 ## [1.2.0] - 2026-07-14
 
 ### Features & UI

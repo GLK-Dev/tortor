@@ -3,6 +3,9 @@ pub mod bencode;
 pub mod command;
 pub mod coordinator;
 pub mod disk;
+pub mod disk_io;
+#[cfg(target_os = "linux")]
+pub mod disk_uring;
 pub mod manager;
 pub mod peer_id;
 pub mod resume;

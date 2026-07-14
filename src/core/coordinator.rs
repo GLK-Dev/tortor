@@ -3,7 +3,7 @@ use tracing::{error, info};
 use std::path::PathBuf;
 
 use crate::core::command::CoreMessage;
-use crate::core::disk::DiskWriter;
+use crate::core::disk_io::AsyncDiskIO;
 use crate::core::manager::TorrentManager;
 use crate::core::resume::{save_fastresume, FastResumeState};
 
@@ -24,7 +24,7 @@ pub async fn run_coordinator(
     mut receiver: mpsc::Receiver<CoordinatorMsg>,
     ui_sender: mpsc::Sender<CoreMessage>,
     mut manager: TorrentManager,
-    mut disk_writer: DiskWriter,
+    mut disk_writer: Box<dyn AsyncDiskIO>,
     resume_path: PathBuf,
     mut shutdown_rx: broadcast::Receiver<()>,
     announce_tx: broadcast::Sender<u32>,
@@ -53,7 +53,7 @@ pub async fn run_coordinator(
                 let _ = reply.send(work);
             }
             CoordinatorMsg::PieceDownloaded(index, data) => {
-                if let Err(err) = disk_writer.write_piece(index, &data).await {
+                if let Err(err) = disk_writer.write_piece(index, data).await {
                     error!("disk write failed for piece {}: {}", index, err);
                     manager.return_work(index);
                     continue;

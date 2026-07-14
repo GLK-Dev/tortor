@@ -12,7 +12,9 @@ use tokio::time::{sleep, Duration};
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::coordinator::{self, CoordinatorMsg};
-use crate::core::disk::DiskWriter;
+use crate::core::disk::StandardDisk;
+#[cfg(target_os = "linux")]
+use crate::core::disk_uring::UringDisk;
 use crate::core::manager::TorrentManager;
 use crate::core::peer_id::generate_peer_id;
 use crate::core::resume::load_fastresume;
@@ -177,13 +179,6 @@ fn background_task(
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
     
-    let disk_writer = runtime.block_on(DiskWriter::init(
-        &output_dir,
-        total_size,
-        meta.piece_length,
-        meta.files.as_ref(),
-        &meta.name,
-    ))?;
     let resume_path = torrent_path.with_extension("fastresume");
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
         Ok(Some(state)) => {
@@ -206,15 +201,89 @@ fn background_task(
         }
     };
     let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
-    runtime.spawn(coordinator::run_coordinator(
-        coord_rx,
-        ui_async_tx.clone(),
-        manager,
-        disk_writer,
-        resume_path,
-        shutdown_tx.subscribe(),
-        announce_tx.clone(),
-    ));
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let output_dir_c = output_dir.clone();
+        let meta_files = meta.files.clone();
+        let meta_name = meta.name.clone();
+        let meta_piece_length = meta.piece_length;
+        
+        let ui_async_tx_c = ui_async_tx.clone();
+        let shutdown_rx_c = shutdown_tx.subscribe();
+        let announce_tx_c = announce_tx.clone();
+        let resume_path_c = resume_path.clone();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                match StandardDisk::init(
+                    &output_dir_c,
+                    total_size,
+                    meta_piece_length,
+                    meta_files.as_ref(),
+                    &meta_name,
+                ).await {
+                    Ok(disk_writer) => {
+                        let disk_writer = Box::new(disk_writer);
+                        coordinator::run_coordinator(
+                            coord_rx,
+                            ui_async_tx_c,
+                            manager,
+                            disk_writer,
+                            resume_path_c,
+                            shutdown_rx_c,
+                            announce_tx_c,
+                        ).await;
+                    }
+                    Err(e) => {
+                        let _ = ui_async_tx_c.send(CoreMessage::Error(format!("Failed to init StandardDisk: {}", e))).await;
+                    }
+                }
+            });
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output_dir_c = output_dir.clone();
+        let meta_files = meta.files.clone();
+        let meta_name = meta.name.clone();
+        let meta_piece_length = meta.piece_length;
+        
+        let ui_async_tx_c = ui_async_tx.clone();
+        let shutdown_rx_c = shutdown_tx.subscribe();
+        let announce_tx_c = announce_tx.clone();
+        let resume_path_c = resume_path.clone();
+
+        std::thread::spawn(move || {
+            tokio_uring::start(async move {
+                match UringDisk::init(
+                    &output_dir_c,
+                    total_size,
+                    meta_piece_length,
+                    meta_files.as_ref(),
+                    &meta_name,
+                ).await {
+                    Ok(disk_writer) => {
+                        let disk_writer = Box::new(disk_writer);
+                        coordinator::run_coordinator(
+                            coord_rx,
+                            ui_async_tx_c,
+                            manager,
+                            disk_writer,
+                            resume_path_c,
+                            shutdown_rx_c,
+                            announce_tx_c,
+                        ).await;
+                    }
+                    Err(e) => {
+                        let _ = ui_async_tx_c.send(CoreMessage::Error(format!("Failed to init UringDisk: {}", e))).await;
+                    }
+                }
+            });
+        });
+    }
 
     let expected_hashes = Arc::new(meta.pieces.clone());
     let piece_length = meta.piece_length;

@@ -22,6 +22,7 @@ const PIPELINE_DEPTH: usize = 5;
 #[derive(Debug, Clone)]
 struct PeerState {
     am_interested: bool,
+    am_choking: bool,
     peer_choking: bool,
     peer_interested: bool,
 }
@@ -30,6 +31,7 @@ impl PeerState {
     fn new() -> Self {
         Self {
             am_interested: false,
+            am_choking: true,
             peer_choking: true,
             peer_interested: false,
         }
@@ -54,9 +56,6 @@ pub async fn run_download_session(
         .await
         .context("timeout while sending Interested")??;
     state.am_interested = true;
-
-    // Seeding: optimistically unchoke the peer so they can request pieces from us
-    let _ = timeout(IO_TIMEOUT, PeerMessage::send_unchoke(stream)).await;
 
     let (bitfield_tx, bitfield_rx) = oneshot::channel();
     if coord_sender
@@ -226,10 +225,26 @@ async fn download_piece(
                 PeerMessage::KeepAlive => {}
                 PeerMessage::Choke => state.peer_choking = true,
                 PeerMessage::Unchoke => state.peer_choking = false,
-                PeerMessage::Interested => state.peer_interested = true,
-                PeerMessage::NotInterested => state.peer_interested = false,
+                PeerMessage::Interested => {
+                    state.peer_interested = true;
+                    if state.am_choking {
+                        let _ = PeerMessage::send_unchoke(stream).await;
+                        state.am_choking = false;
+                    }
+                }
+                PeerMessage::NotInterested => {
+                    state.peer_interested = false;
+                    if !state.am_choking {
+                        let _ = PeerMessage::send_choke(stream).await;
+                        state.am_choking = true;
+                    }
+                }
                 PeerMessage::Have(_) | PeerMessage::Bitfield(_) => {}
                 PeerMessage::Request { index, begin, length } => {
+                    if state.am_choking {
+                        continue;
+                    }
+
                     let (reply_tx, reply_rx) = oneshot::channel();
                     if coord_sender
                         .send(CoordinatorMsg::ReadPiece {
