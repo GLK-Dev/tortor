@@ -94,5 +94,5 @@ cargo run --release
 | Эксперименты с QUIC/WebTransport | В планах | v2.0.0 |
 
 ---
-**Автор:** Создано и поддерживается Виталием Голиком ([mjojo](https://github.com/mjojo)) под эгидой [GLK Dev](https://github.com/GLK-Dev).  
+**Автор:** Создано и поддерживается  ([mjojo](https://github.com/mjojo)) под эгидой [GLK Dev](https://github.com/GLK-Dev).  
 **Лицензия:** Двойная лицензия MIT / Apache-2.0. Подробности в файле LICENSE.
