@@ -45,7 +45,7 @@ pub async fn run_coordinator(
     mut state: CoordinatorState,
     resume_path: PathBuf,
     mut shutdown_rx: broadcast::Receiver<()>,
-    announce_tx: broadcast::Sender<u32>,
+    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
 ) {
     info!("Coordinator task started");
 
@@ -80,7 +80,7 @@ pub async fn run_coordinator(
                     }
 
                     manager.mark_completed(index);
-                    let _ = announce_tx.send(index);
+                    let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
                     let progress = manager.progress();
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 

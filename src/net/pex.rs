@@ -28,3 +28,14 @@ pub fn decode_compact_ipv4(bytes: &[u8]) -> Vec<SocketAddr> {
     
     addrs
 }
+
+pub fn encode_compact_ipv4(peers: &[SocketAddr]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(peers.len() * 6);
+    for peer in peers {
+        if let SocketAddr::V4(addr) = peer {
+            buf.extend_from_slice(&addr.ip().octets());
+            buf.extend_from_slice(&addr.port().to_be_bytes());
+        }
+    }
+    buf
+}

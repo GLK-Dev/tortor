@@ -57,10 +57,11 @@ pub async fn run_swarm_manager(
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     shutdown_tx: broadcast::Sender<()>,
-    announce_tx: broadcast::Sender<u32>,
+    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
 ) {
     let mut active: HashMap<SocketAddr, ActivePeer> = HashMap::new();
     let mut tick = interval(Duration::from_secs(SWARM_TICK_SECS));
+    let mut pex_tick = interval(Duration::from_secs(60));
     let mut shutdown_rx = shutdown_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
     let mut swarm_state = SwarmState {
@@ -149,6 +150,13 @@ pub async fn run_swarm_manager(
                                 .await;
                         }
                     }
+                }
+            }
+
+            _ = pex_tick.tick() => {
+                let current_peers: Vec<SocketAddr> = active.keys().copied().collect();
+                if !current_peers.is_empty() {
+                    let _ = announce_tx.send(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers));
                 }
             }
             _ = tick.tick() => {

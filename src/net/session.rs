@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use tokio::net::TcpStream;
+use std::collections::HashSet;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use std::net::SocketAddr;
@@ -26,6 +27,7 @@ struct PeerState {
     peer_choking: bool,
     peer_interested: bool,
     remote_pex_id: Option<u8>,
+    last_sent_peers: HashSet<SocketAddr>,
 }
 
 impl PeerState {
@@ -36,6 +38,7 @@ impl PeerState {
             peer_choking: true,
             peer_interested: false,
             remote_pex_id: None,
+            last_sent_peers: HashSet::new(),
         }
     }
 }
@@ -50,7 +53,7 @@ pub async fn run_download_session(
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     mut shutdown_rx: broadcast::Receiver<()>,
     swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
-    mut announce_rx: broadcast::Receiver<u32>,
+    mut announce_rx: broadcast::Receiver<crate::core::command::SessionEvent>,
     remote_supports_extensions: bool,
 ) -> Result<()> {
     let mut state = PeerState::new();
@@ -186,7 +189,7 @@ async fn download_piece(
     coord_sender: &mpsc::Sender<CoordinatorMsg>,
     shutdown_rx: &mut broadcast::Receiver<()>,
     swarm_event_tx: Option<&mpsc::UnboundedSender<SwarmEvent>>,
-    announce_rx: &mut broadcast::Receiver<u32>,
+    announce_rx: &mut broadcast::Receiver<crate::core::command::SessionEvent>,
 ) -> Result<PieceOutcome> {
     let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
     let mut telemetry = SessionTelemetry::default();
@@ -221,16 +224,42 @@ async fn download_piece(
                 info!("download session for {} received shutdown signal", peer_addr);
                 return Ok(PieceOutcome::Shutdown);
             }
+
             announce = announce_rx.recv() => {
                 match announce {
-                    Ok(piece_index) => {
+                    Ok(crate::core::command::SessionEvent::PieceCompleted(piece_index)) => {
                         let _ = PeerMessage::send_have(stream, piece_index).await;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers)) => {
+                        if let Some(remote_id) = state.remote_pex_id {
+                            let current_set: HashSet<SocketAddr> = current_peers.into_iter().collect();
+                            
+                            let mut dropped: Vec<SocketAddr> = state.last_sent_peers.difference(&current_set).copied().take(50).collect();
+                            let mut added: Vec<SocketAddr> = current_set.difference(&state.last_sent_peers).copied().collect();
+                            
+                            added.retain(|&addr| addr != peer_addr);
+                            let added: Vec<SocketAddr> = added.into_iter().take(50).collect();
+                            
+                            if !added.is_empty() || !dropped.is_empty() {
+                                state.last_sent_peers = current_set;
+                                
+                                let pex_msg = crate::net::pex::PexMessage {
+                                    added: crate::net::pex::encode_compact_ipv4(&added),
+                                    added_f: vec![0; added.len()],
+                                    dropped: crate::net::pex::encode_compact_ipv4(&dropped),
+                                };
+                                
+                                if let Ok(payload) = serde_bencode::to_bytes(&pex_msg) {
+                                    let _ = PeerMessage::send_extended(stream, remote_id, &payload).await;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {}
                 }
                 continue;
             }
+
             result = timeout(READ_TICK, PeerMessage::read_from(stream)) => result,
         };
         match read_result {

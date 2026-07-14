@@ -36,3 +36,9 @@ pub enum CoreMessage {
     TelemetryUpdate(SocketAddr, SessionTelemetry),
     Error(String),
 }
+
+#[derive(Debug, Clone)]
+pub enum SessionEvent {
+    PieceCompleted(u32),
+    ActivePeersSnapshot(Vec<std::net::SocketAddr>),
+}

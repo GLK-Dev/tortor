@@ -167,7 +167,7 @@ fn background_task(
 
     let (ui_async_tx, mut ui_async_rx) = tokio_mpsc::channel::<CoreMessage>(1024);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
-    let (announce_tx, _) = broadcast::channel::<u32>(64);
+    let (announce_tx, _) = broadcast::channel::<crate::core::command::SessionEvent>(64);
     let ui_bridge_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(msg) = ui_async_rx.recv().await {

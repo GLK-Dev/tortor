@@ -24,7 +24,7 @@ pub async fn execute_probe(
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     shutdown_rx: broadcast::Receiver<()>,
     swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
-    announce_rx: broadcast::Receiver<u32>,
+    announce_rx: broadcast::Receiver<crate::core::command::SessionEvent>,
 ) -> Result<String> {
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr))
         .await
