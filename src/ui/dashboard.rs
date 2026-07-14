@@ -12,9 +12,7 @@ use tokio::time::{sleep, Duration};
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::coordinator::{self, CoordinatorMsg};
-use crate::core::disk::StandardDisk;
-#[cfg(target_os = "linux")]
-use crate::core::disk_uring::UringDisk;
+use crate::core::disk::DiskWriter;
 use crate::core::manager::TorrentManager;
 use crate::core::peer_id::generate_peer_id;
 use crate::core::resume::load_fastresume;
@@ -42,8 +40,8 @@ fn ascii_progress_bar(progress: f32, width: usize) -> String {
     let p = progress.clamp(0.0, 1.0);
     let filled = (p * width as f32).round() as usize;
     let empty = width.saturating_sub(filled);
-    let filled_str = "█".repeat(filled);
-    let empty_str = "░".repeat(empty);
+    let filled_str = "#".repeat(filled);
+    let empty_str = "-".repeat(empty);
     format!("[{}{}] {}%", filled_str, empty_str, (p * 100.0) as u32)
 }
 
@@ -167,7 +165,7 @@ fn background_task(
 
     let (ui_async_tx, mut ui_async_rx) = tokio_mpsc::channel::<CoreMessage>(1024);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
-    let (announce_tx, _) = broadcast::channel::<crate::core::command::SessionEvent>(64);
+    let (announce_tx, _) = broadcast::channel::<u32>(64);
     let ui_bridge_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(msg) = ui_async_rx.recv().await {
@@ -179,6 +177,13 @@ fn background_task(
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
     
+    let disk_writer = runtime.block_on(DiskWriter::init(
+        &output_dir,
+        total_size,
+        meta.piece_length,
+        meta.files.as_ref(),
+        &meta.name,
+    ))?;
     let resume_path = torrent_path.with_extension("fastresume");
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
         Ok(Some(state)) => {
@@ -201,89 +206,15 @@ fn background_task(
         }
     };
     let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let output_dir_c = output_dir.clone();
-        let meta_files = meta.files.clone();
-        let meta_name = meta.name.clone();
-        let meta_piece_length = meta.piece_length;
-        
-        let ui_async_tx_c = ui_async_tx.clone();
-        let shutdown_rx_c = shutdown_tx.subscribe();
-        let announce_tx_c = announce_tx.clone();
-        let resume_path_c = resume_path.clone();
-
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            rt.block_on(async move {
-                match StandardDisk::init(
-                    &output_dir_c,
-                    total_size,
-                    meta_piece_length,
-                    meta_files.as_ref(),
-                    &meta_name,
-                ).await {
-                    Ok(disk_writer) => {
-                        let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
-                        coordinator::run_coordinator(
-                            coord_rx,
-                            ui_async_tx_c,
-                            state,
-                            resume_path_c,
-                            shutdown_rx_c,
-                            announce_tx_c,
-                        ).await;
-                    }
-                    Err(e) => {
-                        let _ = ui_async_tx_c.send(CoreMessage::Error(format!("Failed to init StandardDisk: {}", e))).await;
-                    }
-                }
-            });
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let output_dir_c = output_dir.clone();
-        let meta_files = meta.files.clone();
-        let meta_name = meta.name.clone();
-        let meta_piece_length = meta.piece_length;
-        
-        let ui_async_tx_c = ui_async_tx.clone();
-        let shutdown_rx_c = shutdown_tx.subscribe();
-        let announce_tx_c = announce_tx.clone();
-        let resume_path_c = resume_path.clone();
-
-        std::thread::spawn(move || {
-            tokio_uring::start(async move {
-                match UringDisk::init(
-                    &output_dir_c,
-                    total_size,
-                    meta_piece_length,
-                    meta_files.as_ref(),
-                    &meta_name,
-                ).await {
-                    Ok(disk_writer) => {
-                        let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
-                        coordinator::run_coordinator(
-                            coord_rx,
-                            ui_async_tx_c,
-                            state,
-                            resume_path_c,
-                            shutdown_rx_c,
-                            announce_tx_c,
-                        ).await;
-                    }
-                    Err(e) => {
-                        let _ = ui_async_tx_c.send(CoreMessage::Error(format!("Failed to init UringDisk: {}", e))).await;
-                    }
-                }
-            });
-        });
-    }
+    runtime.spawn(coordinator::run_coordinator(
+        coord_rx,
+        ui_async_tx.clone(),
+        manager,
+        disk_writer,
+        resume_path,
+        shutdown_tx.subscribe(),
+        announce_tx.clone(),
+    ));
 
     let expected_hashes = Arc::new(meta.pieces.clone());
     let piece_length = meta.piece_length;
@@ -430,10 +361,6 @@ impl TorTorApp {
                     session.logs.push(format!("Loaded torrent: {}", meta.name));
                     session.meta = Some(meta);
                 }
-                CoreMessage::MetadataReady(meta) => {
-                    session.logs.push(format!("Metadata downloaded: {}", meta.name));
-                    session.meta = Some((*meta).clone());
-                }
                 CoreMessage::GlobalProgress(progress) => {
                     session.global_progress = progress.clamp(0.0, 1.0);
                 }
@@ -504,7 +431,7 @@ impl eframe::App for TorTorApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
-                    ui.label(RichText::new("Version 1.5.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.label(RichText::new("Version 1.2.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
                     ui.add_space(10.0);
                     ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
                     ui.add_space(15.0);
@@ -518,7 +445,6 @@ impl eframe::App for TorTorApp {
                         "📂 Multi-file torrent & Session isolation",
                         "🛡️ Memory-safe piece assembler",
                         "🔄 Zero-copy I/O with Tokio",
-                        "🌐 Kademlia DHT & PEX Support",
                     ];
                     for f in features {
                         ui.label(RichText::new(f).color(Color32::from_rgb(200, 220, 255)));
@@ -633,7 +559,7 @@ impl eframe::App for TorTorApp {
                             // The clickable bar
                             let btn = ui.add_sized(
                                 [ui.available_width(), 35.0],
-                                egui::Button::new(RichText::new(title).size(18.0).color(if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(0, 210, 255) }))
+                                egui::Button::new(RichText::new(title).size(18.0).monospace().color(if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(0, 210, 255) }))
                                     .fill(Color32::TRANSPARENT)
                             );
 
