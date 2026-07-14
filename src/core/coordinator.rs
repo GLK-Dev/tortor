@@ -11,6 +11,7 @@ pub enum CoordinatorMsg {
     RequestWork(oneshot::Sender<Option<u32>>),
     PieceDownloaded(u32, Vec<u8>),
     PieceFailed(u32),
+    GetCompletedPieces(oneshot::Sender<Vec<u32>>),
     ReadPiece {
         index: u32,
         begin: u32,
@@ -26,6 +27,7 @@ pub async fn run_coordinator(
     mut disk_writer: DiskWriter,
     resume_path: PathBuf,
     mut shutdown_rx: broadcast::Receiver<()>,
+    announce_tx: broadcast::Sender<u32>,
 ) {
     info!("Coordinator task started");
     let _ = ui_sender
@@ -58,6 +60,7 @@ pub async fn run_coordinator(
                 }
 
                 manager.mark_completed(index);
+                let _ = announce_tx.send(index);
                 let progress = manager.progress();
                 let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 
@@ -73,6 +76,9 @@ pub async fn run_coordinator(
             }
             CoordinatorMsg::PieceFailed(index) => {
                 manager.return_work(index);
+            }
+            CoordinatorMsg::GetCompletedPieces(reply) => {
+                let _ = reply.send(manager.completed_pieces());
             }
             CoordinatorMsg::ReadPiece {
                 index,

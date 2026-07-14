@@ -56,6 +56,7 @@ pub async fn run_swarm_manager(
     ui_sender: mpsc::Sender<CoreMessage>,
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     shutdown_tx: broadcast::Sender<()>,
+    announce_tx: broadcast::Sender<u32>,
 ) {
     let mut active: HashMap<SocketAddr, ActivePeer> = HashMap::new();
     let mut tick = interval(Duration::from_secs(SWARM_TICK_SECS));
@@ -168,6 +169,7 @@ pub async fn run_swarm_manager(
                     let coord_sender_cloned = coord_sender.clone();
                     let event_tx_cloned = event_tx.clone();
                     let local_shutdown_rx = shutdown_tx.subscribe();
+                    let local_announce_rx = announce_tx.subscribe();
 
                     let handle = tokio::spawn(async move {
                         let _ = ui_sender_cloned.send(CoreMessage::ProbeStarted(addr)).await;
@@ -182,6 +184,7 @@ pub async fn run_swarm_manager(
                             coord_sender_cloned,
                             local_shutdown_rx,
                             Some(event_tx_cloned.clone()),
+                            local_announce_rx,
                         )
                         .await;
 

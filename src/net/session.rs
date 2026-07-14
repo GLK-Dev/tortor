@@ -46,6 +46,7 @@ pub async fn run_download_session(
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     mut shutdown_rx: broadcast::Receiver<()>,
     swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
+    mut announce_rx: broadcast::Receiver<u32>,
 ) -> Result<()> {
     let mut state = PeerState::new();
 
@@ -53,6 +54,18 @@ pub async fn run_download_session(
         .await
         .context("timeout while sending Interested")??;
     state.am_interested = true;
+
+    let (bitfield_tx, bitfield_rx) = oneshot::channel();
+    if coord_sender
+        .send(CoordinatorMsg::GetCompletedPieces(bitfield_tx))
+        .await
+        .is_ok()
+    {
+        if let Ok(completed_pieces) = bitfield_rx.await {
+            let bitfield = build_bitfield(expected_hashes.len() as u32, &completed_pieces);
+            let _ = PeerMessage::send_bitfield(stream, &bitfield).await;
+        }
+    }
 
     loop {
         let (work_tx, work_rx) = oneshot::channel();
@@ -96,6 +109,7 @@ pub async fn run_download_session(
             &coord_sender,
             &mut shutdown_rx,
             swarm_event_tx.as_ref(),
+            &mut announce_rx,
         )
         .await;
 
@@ -157,6 +171,7 @@ async fn download_piece(
     coord_sender: &mpsc::Sender<CoordinatorMsg>,
     shutdown_rx: &mut broadcast::Receiver<()>,
     swarm_event_tx: Option<&mpsc::UnboundedSender<SwarmEvent>>,
+    announce_rx: &mut broadcast::Receiver<u32>,
 ) -> Result<PieceOutcome> {
     let mut assembler = PieceAssembler::new(target_piece_index, target_piece_length);
     let mut telemetry = SessionTelemetry::default();
@@ -190,6 +205,16 @@ async fn download_piece(
             _ = shutdown_rx.recv() => {
                 info!("download session for {} received shutdown signal", peer_addr);
                 return Ok(PieceOutcome::Shutdown);
+            }
+            announce = announce_rx.recv() => {
+                match announce {
+                    Ok(piece_index) => {
+                        let _ = PeerMessage::send_have(stream, piece_index).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                }
+                continue;
             }
             result = timeout(READ_TICK, PeerMessage::read_from(stream)) => result,
         };
@@ -308,4 +333,21 @@ async fn download_piece(
             }
         }
     }
+}
+
+fn build_bitfield(total_pieces: u32, completed_pieces: &[u32]) -> Vec<u8> {
+    let bytes_len = ((total_pieces + 7) / 8) as usize;
+    let mut bitfield = vec![0u8; bytes_len];
+
+    for &piece_index in completed_pieces {
+        if piece_index >= total_pieces {
+            continue;
+        }
+
+        let byte_index = (piece_index / 8) as usize;
+        let bit_offset = 7 - (piece_index % 8);
+        bitfield[byte_index] |= 1 << bit_offset;
+    }
+
+    bitfield
 }

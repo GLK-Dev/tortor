@@ -115,6 +115,7 @@ fn background_task(
 
     let (ui_async_tx, mut ui_async_rx) = tokio_mpsc::channel::<CoreMessage>(1024);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
+    let (announce_tx, _) = broadcast::channel::<u32>(64);
     let ui_bridge_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(msg) = ui_async_rx.recv().await {
@@ -160,6 +161,7 @@ fn background_task(
         disk_writer,
         resume_path,
         shutdown_tx.subscribe(),
+        announce_tx.clone(),
     ));
 
     let expected_hashes = Arc::new(meta.pieces.clone());
@@ -190,6 +192,7 @@ fn background_task(
                 let ui_async_tx = ui_async_tx.clone();
                 let coord_tx = coord_tx.clone();
                 let shutdown_tx = shutdown_tx.clone();
+                let announce_tx_for_swarm = announce_tx.clone();
                 let available = available_peers.clone();
                 let tracker_url_for_swarm = tracker_url.clone();
 
@@ -207,6 +210,7 @@ fn background_task(
                         ui_async_tx,
                         coord_tx,
                         shutdown_tx,
+                        announce_tx_for_swarm,
                     )
                     .await;
                 });
@@ -229,6 +233,7 @@ fn background_task(
                 let ui_async_tx = ui_async_tx.clone();
                 let coord_tx = coord_tx.clone();
                 let shutdown_rx = shutdown_tx.subscribe();
+                let announce_tx_for_probe = announce_tx.clone();
 
                 runtime.spawn(async move {
                     let _ = tx_clone.send(CoreMessage::ProbeStarted(addr));
@@ -243,6 +248,7 @@ fn background_task(
                         coord_tx,
                         shutdown_rx,
                         None,
+                        announce_tx_for_probe.subscribe(),
                     )
                     .await;
 

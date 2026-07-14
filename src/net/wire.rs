@@ -149,6 +149,36 @@ impl PeerMessage {
         Ok(())
     }
 
+    pub async fn send_have(stream: &mut TcpStream, piece_index: u32) -> Result<()> {
+        let mut msg = [0u8; 9];
+        msg[0..4].copy_from_slice(&5u32.to_be_bytes());
+        msg[4] = 4;
+        msg[5..9].copy_from_slice(&piece_index.to_be_bytes());
+
+        stream
+            .write_all(&msg)
+            .await
+            .context("failed to send Have message")?;
+        Ok(())
+    }
+
+    pub async fn send_bitfield(stream: &mut TcpStream, bitfield: &[u8]) -> Result<()> {
+        let len = 1u32 + bitfield.len() as u32;
+        stream
+            .write_u32(len)
+            .await
+            .context("failed to send Bitfield length")?;
+        stream
+            .write_u8(5)
+            .await
+            .context("failed to send Bitfield id")?;
+        stream
+            .write_all(bitfield)
+            .await
+            .context("failed to send Bitfield payload")?;
+        Ok(())
+    }
+
     pub async fn send_piece(
         stream: &mut TcpStream,
         index: u32,
