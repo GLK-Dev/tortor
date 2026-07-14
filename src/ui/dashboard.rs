@@ -420,6 +420,7 @@ struct TorTorApp {
     next_id: usize,
     listen_port: u16,
     session_store: crate::core::session_store::SessionStore,
+    quit_requested: bool,
 }
 
 impl TorTorApp {
@@ -437,6 +438,7 @@ impl TorTorApp {
             next_id: 1,
             listen_port,
             session_store,
+            quit_requested: false,
         }
     }
 
@@ -620,15 +622,14 @@ impl eframe::App for TorTorApp {
 
         // Graceful shutdown on window close
         if ctx.input(|i| i.viewport().close_requested()) {
-            let mut all_shutting_down = true;
+            self.quit_requested = true;
             for session in self.sessions.values_mut() {
                 if !session.is_shutting_down {
-                    all_shutting_down = false;
                     session.is_shutting_down = true;
                     let _ = session.command_tx.send(CoreCommand::StopAll);
                 }
             }
-            if !all_shutting_down && !self.sessions.is_empty() {
+            if !self.sessions.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
@@ -655,7 +656,7 @@ impl eframe::App for TorTorApp {
             }
         }
 
-        if self.sessions.is_empty() && ctx.input(|i| i.viewport().close_requested()) {
+        if self.quit_requested && self.sessions.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
