@@ -1,3 +1,4 @@
+#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
 
 use std::path::PathBuf;
@@ -55,7 +56,7 @@ fn main() -> Result<()> {
 
     if run_gui {
         let port = args.listen_port.unwrap_or(6881);
-        return dashboard::run_dashboard(args.torrent.clone(), args.magnet.clone(), port, args.output);
+        return dashboard::run_dashboard(args.torrent.clone(), port, args.output);
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
