@@ -66,8 +66,9 @@ pub async fn run_swarm_manager(
     let mut shutdown_rx = shutdown_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
     
-    // Initialize DHT Manager
-    if let Ok((dht_manager, dht_cmd_tx)) = crate::net::dht::actor::DhtManager::new(6881, event_tx.clone()).await {
+    // Initialize DHT Manager on a different UDP port to avoid conflict with QUIC
+    let dht_port = listen_port.saturating_add(1);
+    if let Ok((dht_manager, dht_cmd_tx)) = crate::net::dht::actor::DhtManager::new(dht_port, event_tx.clone()).await {
         tokio::spawn(dht_manager.run());
         let _ = dht_cmd_tx.send(crate::net::dht::actor::DhtManagerCommand::StartSearch(crate::net::dht::routing::NodeId(info_hash))).await;
     }
