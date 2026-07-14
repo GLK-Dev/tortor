@@ -430,6 +430,10 @@ impl TorTorApp {
                     session.logs.push(format!("Loaded torrent: {}", meta.name));
                     session.meta = Some(meta);
                 }
+                CoreMessage::MetadataReady(meta) => {
+                    session.logs.push(format!("Metadata downloaded: {}", meta.name));
+                    session.meta = Some((*meta).clone());
+                }
                 CoreMessage::GlobalProgress(progress) => {
                     session.global_progress = progress.clamp(0.0, 1.0);
                 }

@@ -1,5 +1,12 @@
 # Changelog - TorTor
 
+## [1.4.0] - 2026-07-14
+
+### Core Architecture / Архитектура
+- **Magnet Links (BEP 9 / BEP 10):** Full support for the Extension Protocol and metadata downloading. TorTor can now parse magnet links, connect to peers, and download the .torrent file directly from the swarm into memory. (Полная поддержка Magnet-ссылок и протокола расширений. Скачивание .torrent файла напрямую из роя в память).
+- **Warm Transition (Горячий переход):** The underlying IO engine dynamically transitions from Metadata Assembly to Data Download without dropping active TCP connections to peers. (Динамическое переключение движка IO с режима метаданных на режим скачивания без разрыва TCP соединений).
+
+
 ## [1.3.0] - 2026-07-14
 
 ### Core Architecture
@@ -36,11 +43,13 @@
 - **Graceful Shutdown:** Безопасное завершение задач через broadcast-шину и перехват системных сигналов.
 
 ### UX & Interface
-- **Desktop-First Flow:** Нативная интеграция выбора файла (fd).
+- **Desktop-First Flow:** Нативная интеграция выбора файла (
+fd).
 - **Live Telemetry:** Color-coded индикация здоровья соединений и ProgressBar для кусков.
 - **Background Persistence:** Фоновый процесс записи на диск и авто-сохранение состояния.
 
 ### Технические детали
 - Использование 	okio для всей асинхронности.
 - gui для Immediate Mode GUI.
-- fd для системных диалогов.
+- 
+fd для системных диалогов.

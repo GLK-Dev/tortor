@@ -40,9 +40,12 @@ cargo run --release
 | Basic TCP listener and protocol scaffolding | Done | v1.0.0 |
 | Dynamic SIMD hashing (AVX2 / SSE4.1) | Done | v1.0.0 |
 | Multi-Torrent Download Manager | Done | v1.1.0 |
-| ASCII UI, Neon Theme, & App Icon | Done | v1.2.0 |
+| ASCII UI, Neon Theme, & App Icon | Done | v1.4.0 |
 | Choke/Unchoke Policy & Handshake Layer | Done | v1.3.0 |
-| io_uring disk pipeline (Linux) | Planned | v2.0.0 |
+| io_uring disk pipeline (Linux) | Done | v1.3.0 |
+| Magnet Links & BEP 9/10 Extension Protocol | Done | v1.4.0 |
+| Peer Exchange (PEX - BEP 11) | Planned | v1.5.0 |
+| Kademlia DHT (BEP 5) | Planned | v2.0.0 |
 | QUIC/WebTransport transport experiments | Planned | v2.0.0 |
 
 ---
@@ -84,7 +87,10 @@ cargo run --release
 | Менеджер управления несколькими торрентами | Готово | v1.1.0 |
 | Хакерский ASCII UI, неоновая тема и иконка | Готово | v1.2.0 |
 | Choke/Unchoke Политика и State Machine | Готово | v1.3.0 |
-| Дисковый конвейер io_uring (Linux) | В планах | v2.0.0 |
+| Дисковый конвейер io_uring (Linux) | Готово | v1.3.0 |
+| Magnet-ссылки и BEP 9/10 протокол расширений | Готово | v1.4.0 |
+| Peer Exchange (PEX - BEP 11) | В планах | v1.5.0 |
+| Kademlia DHT (BEP 5) | В планах | v2.0.0 |
 | Эксперименты с QUIC/WebTransport | В планах | v2.0.0 |
 
 ---

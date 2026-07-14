@@ -22,6 +22,7 @@ pub struct SessionTelemetry {
 #[derive(Debug, Clone)]
 pub enum CoreMessage {
     Status(String),
+    MetadataReady(std::sync::Arc<crate::core::torrent::TorrentMeta>),
     TorrentLoaded(TorrentMeta),
     GlobalProgress(f32),
     DownloadComplete,

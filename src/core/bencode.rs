@@ -79,6 +79,47 @@ struct RawInfo {
     files: Option<Vec<RawFile>>,
 }
 
+pub fn parse_torrent_metadata_bytes(info_bytes: &[u8], expected_info_hash: [u8; 20]) -> Result<TorrentMeta, TorrentParseError> {
+    let raw_info: RawInfo = serde_bencode::from_bytes(info_bytes)?;
+    let actual_hash = crate::crypto::core::hash_sha1(info_bytes);
+    if actual_hash != expected_info_hash {
+        return Err(TorrentParseError::InvalidBencode("SHA-1 mismatch for metadata"));
+    }
+
+    let pieces_len = raw_info.pieces.len();
+    if pieces_len % 20 != 0 {
+        return Err(TorrentParseError::InvalidPiecesLength(pieces_len));
+    }
+
+    let mut pieces = Vec::with_capacity(pieces_len / 20);
+    for chunk in raw_info.pieces.chunks_exact(20) {
+        let mut hash = [0u8; 20];
+        hash.copy_from_slice(chunk);
+        pieces.push(hash);
+    }
+
+    let pieces_count = (pieces_len / 20) as u32;
+
+    Ok(TorrentMeta::new(
+        String::new(), // No announce URL in metadata
+        raw_info.name,
+        raw_info.piece_length,
+        pieces_count,
+        pieces,
+        raw_info.length,
+        raw_info.files.map(|files| {
+            files
+                .into_iter()
+                .map(|f| crate::core::torrent::TorrentFile {
+                    length: f.length,
+                    path: f.path,
+                })
+                .collect()
+        }),
+        actual_hash,
+    ))
+}
+
 pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseError> {
     let raw: RawTorrent = serde_bencode::from_bytes(bytes)?;
     let info_slice = extract_info_dictionary_slice(bytes)?;
