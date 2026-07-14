@@ -7,3 +7,5 @@ pub mod tracker;
 pub mod wire;
 
 pub mod pex;
+
+pub mod dht;
