@@ -64,12 +64,19 @@ struct RawTorrent {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawFile {
+    length: u64,
+    path: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RawInfo {
     name: String,
     #[serde(rename = "piece length")]
     piece_length: u32,
     pieces: ByteBuf,
     length: Option<u64>,
+    files: Option<Vec<RawFile>>,
 }
 
 pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseError> {
@@ -97,7 +104,16 @@ pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseErro
         raw.info.piece_length,
         pieces_count,
         pieces,
-        raw.info.length,
+                raw.info.length,
+        raw.info.files.map(|files| {
+            files
+                .into_iter()
+                .map(|f| crate::core::torrent::TorrentFile {
+                    length: f.length,
+                    path: f.path,
+                })
+                .collect()
+        }),
         info_hash,
     ))
 }
@@ -260,3 +276,4 @@ mod tests {
         }
     }
 }
+

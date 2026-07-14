@@ -18,6 +18,10 @@ use tortor::ui::dashboard;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Directory to download files to
+    #[arg(short, long, default_value = ".")]
+    output: PathBuf,
+
     /// Path to .torrent file
     #[arg(short, long)]
     torrent: Option<PathBuf>,
@@ -34,14 +38,14 @@ struct Args {
     #[arg(long, default_value_t = false)]
     announce_tracker: bool,
 
-    /// Launch immediate-mode dashboard (requires --features gui)
+    /// Run without GUI
     #[arg(long, default_value_t = false)]
-    gui: bool,
+    cli: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let run_gui = args.gui || (args.torrent.is_none() && std::env::args().len() == 1);
+    let run_gui = !args.cli;
 
     let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
     tracing_subscriber::fmt().with_max_level(log_level).init();
@@ -49,7 +53,7 @@ fn main() -> Result<()> {
     #[cfg(feature = "gui")]
     if run_gui {
         let port = args.listen_port.unwrap_or(6881);
-        return dashboard::run_dashboard(args.torrent.clone(), port);
+        return dashboard::run_dashboard(args.torrent.clone(), port, args.output);
     }
 
     #[cfg(not(feature = "gui"))]
@@ -123,3 +127,5 @@ async fn run_cli(args: Args) -> Result<()> {
 
     Ok(())
 }
+
+

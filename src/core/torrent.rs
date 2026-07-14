@@ -1,4 +1,10 @@
 #[derive(Debug, Clone)]
+pub struct TorrentFile {
+    pub length: u64,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TorrentMeta {
     pub announce: String,
     pub name: String,
@@ -6,6 +12,7 @@ pub struct TorrentMeta {
     pub pieces_count: u32,
     pub pieces: Vec<[u8; 20]>,
     pub total_length: Option<u64>,
+    pub files: Option<Vec<TorrentFile>>,
     pub info_hash: [u8; 20],
 }
 
@@ -17,8 +24,13 @@ impl TorrentMeta {
         pieces_count: u32,
         pieces: Vec<[u8; 20]>,
         total_length: Option<u64>,
+        files: Option<Vec<TorrentFile>>,
         info_hash: [u8; 20],
     ) -> Self {
+        let total_length = total_length.or_else(|| {
+            files.as_ref().map(|fs| fs.iter().map(|f| f.length).sum())
+        });
+        
         Self {
             announce: announce.into(),
             name: name.into(),
@@ -26,6 +38,7 @@ impl TorrentMeta {
             pieces_count,
             pieces,
             total_length,
+            files,
             info_hash,
         }
     }

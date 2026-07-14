@@ -126,11 +126,13 @@ fn background_task(
     let total_size = meta
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
-    let output_path = torrent_path.with_extension("download.part");
+    
     let disk_writer = runtime.block_on(DiskWriter::init(
-        output_path,
+        &output_dir,
         total_size,
         meta.piece_length,
+        meta.files.as_ref(),
+        &meta.name,
     ))?;
     let resume_path = torrent_path.with_extension("fastresume");
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
@@ -279,6 +281,7 @@ fn background_task(
 }
 
 struct TorTorApp {
+    show_about: bool,
     tx: Sender<CoreMessage>,
     rx: Receiver<CoreMessage>,
     command_tx: Sender<CoreCommand>,
@@ -305,6 +308,7 @@ impl TorTorApp {
         listen_port: u16,
     ) -> Self {
         let mut app = Self {
+            show_about: false,
             tx,
             rx,
             command_tx,
@@ -456,6 +460,35 @@ impl TorTorApp {
 
 impl eframe::App for TorTorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(egui::Visuals::dark());
+        
+        let mut about_open = self.show_about;
+        egui::Window::new("About TorTor")
+            .open(&mut about_open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.heading("TorTor 1.0.0");
+                ui.label("High-performance BitTorrent client written in Rust.");
+                ui.add_space(8.0);
+                ui.label("Features:");
+                ui.label("- Dynamic SIMD dispatch (AVX2/SSE4.1)");
+                ui.label("- Multi-file torrent support");
+                ui.label("- Memory-safe piece assembler");
+                ui.label("- Zero-copy I/O with Tokio");
+                ui.add_space(8.0);
+                ui.label("Created by: Vitaliy Golik <GLK Dev>");
+            });
+        self.show_about = about_open;
+
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                if ui.button("About").clicked() {
+                    self.show_about = true;
+                }
+            });
+        });
+
         if self.core_started && ctx.input(|i| i.viewport().close_requested()) && !self.is_shutting_down {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.request_shutdown();
@@ -629,3 +662,5 @@ impl eframe::App for TorTorApp {
         ctx.request_repaint();
     }
 }
+
+
