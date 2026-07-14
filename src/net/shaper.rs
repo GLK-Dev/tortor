@@ -138,7 +138,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for ShapedStream<T> {
             return Poll::Pending;
         }
 
-        // Limit the read buffer to llowed
+        // Limit the read buffer to  llowed
         let mut sub_buf = buf.take(allowed);
         match Pin::new(&mut self.inner).poll_read(cx, &mut sub_buf) {
             Poll::Ready(Ok(())) => {
@@ -148,8 +148,10 @@ impl<T: AsyncRead + Unpin> AsyncRead for ShapedStream<T> {
                     DOWNLOAD_TOKENS.fetch_add(unused as isize, Ordering::Relaxed);
                 }
                 // Advance the original buffer by the amount read
-                let len = sub_buf.filled().len();
-                buf.advance(len);
+                unsafe {
+                    buf.assume_init(bytes_read);
+                }
+                buf.advance(bytes_read);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(e)) => {
