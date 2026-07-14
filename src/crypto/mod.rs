@@ -6,3 +6,5 @@ pub mod simd;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;
+
+pub mod tls;

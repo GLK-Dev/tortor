@@ -1,4 +1,4 @@
-#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
+
 
 use std::path::PathBuf;
 
@@ -11,7 +11,6 @@ use tortor::core::peer_id::generate_peer_id;
 use tortor::net::listener;
 use tortor::net::tracker;
 
-#[cfg(feature = "gui")]
 use tortor::ui::dashboard;
 
 /// TorTor - High-performance BitTorrent client
@@ -41,6 +40,10 @@ struct Args {
     /// Run without GUI
     #[arg(long, default_value_t = false)]
     cli: bool,
+
+    /// Optional magnet link
+    #[arg(index = 1)]
+    magnet: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -50,15 +53,9 @@ fn main() -> Result<()> {
     let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
-    #[cfg(feature = "gui")]
     if run_gui {
         let port = args.listen_port.unwrap_or(6881);
-        return dashboard::run_dashboard(args.torrent.clone(), port, args.output);
-    }
-
-    #[cfg(not(feature = "gui"))]
-    if run_gui {
-        anyhow::bail!("GUI mode requires building with --features gui");
+        return dashboard::run_dashboard(args.torrent.clone(), args.magnet.clone(), port, args.output);
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

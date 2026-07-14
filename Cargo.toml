@@ -1,6 +1,6 @@
 [package]
 name = "tortor"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 authors = ["Vitaliy Golik <GLK Dev>"]
 description = "High-performance BitTorrent client with dynamic SIMD dispatch and zero-copy I/O"
@@ -15,6 +15,15 @@ gpu = []
 gui = ["dep:eframe"]
 
 [dependencies]
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+
+bincode = "1.3.3"
+
+ratatui = "0.26.1"
+crossterm = "0.27.0"
+
 async-trait = "0.1.80"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

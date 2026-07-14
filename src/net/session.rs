@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use tokio::net::TcpStream;
+use crate::net::transport::PeerStream;
 use std::collections::HashSet;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{timeout, Duration};
@@ -44,7 +44,7 @@ impl PeerState {
 }
 
 pub async fn run_download_session(
-    stream: &mut TcpStream,
+    shaped_stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
     expected_hashes: Arc<Vec<[u8; 20]>>,
     piece_length: u32,
     total_length: Option<u64>,
@@ -64,11 +64,11 @@ pub async fn run_download_session(
         m.insert("ut_pex".to_string(), 2);
         let ext_dict = ExtendedHandshakeDict { m, metadata_size: None };
         if let Ok(payload) = serde_bencode::to_bytes(&ext_dict) {
-            let _ = PeerMessage::send_extended(stream, 0, &payload).await;
+            let _ = PeerMessage::send_extended(shaped_stream, 0, &payload).await;
         }
     }
 
-    timeout(IO_TIMEOUT, PeerMessage::send_interested(stream))
+    timeout(IO_TIMEOUT, PeerMessage::send_interested(shaped_stream))
         .await
         .context("timeout while sending Interested")??;
     state.am_interested = true;
@@ -81,7 +81,7 @@ pub async fn run_download_session(
     {
         if let Ok(completed_pieces) = bitfield_rx.await {
             let bitfield = build_bitfield(expected_hashes.len() as u32, &completed_pieces);
-            let _ = PeerMessage::send_bitfield(stream, &bitfield).await;
+            let _ = PeerMessage::send_bitfield(shaped_stream, &bitfield).await;
         }
     }
 
@@ -117,7 +117,7 @@ pub async fn run_download_session(
             .ok_or_else(|| anyhow::anyhow!("invalid piece length for piece {}", target_piece_index))?;
 
         let piece_result = download_piece(
-            stream,
+            shaped_stream,
             &mut state,
             target_piece_index,
             target_piece_length,
@@ -179,7 +179,7 @@ fn piece_len_at(index: u32, piece_length: u32, total_length: Option<u64>) -> Opt
 }
 
 async fn download_piece(
-    stream: &mut TcpStream,
+    shaped_stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
     state: &mut PeerState,
     target_piece_index: u32,
     target_piece_length: u32,
@@ -201,7 +201,7 @@ async fn download_piece(
                 if let Some((begin, len, is_retry)) = assembler.next_request(REQUEST_RETRY_TIMEOUT) {
                     timeout(
                         IO_TIMEOUT,
-                        PeerMessage::send_request(stream, target_piece_index, begin, len),
+                        PeerMessage::send_request(shaped_stream, target_piece_index, begin, len),
                     )
                     .await
                     .context("timeout while sending Request")??;
@@ -228,7 +228,7 @@ async fn download_piece(
             announce = announce_rx.recv() => {
                 match announce {
                     Ok(crate::core::command::SessionEvent::PieceCompleted(piece_index)) => {
-                        let _ = PeerMessage::send_have(stream, piece_index).await;
+                        let _ = PeerMessage::send_have(shaped_stream, piece_index).await;
                     }
                     Ok(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers)) => {
                         if let Some(remote_id) = state.remote_pex_id {
@@ -250,7 +250,7 @@ async fn download_piece(
                                 };
                                 
                                 if let Ok(payload) = serde_bencode::to_bytes(&pex_msg) {
-                                    let _ = PeerMessage::send_extended(stream, remote_id, &payload).await;
+                                    let _ = PeerMessage::send_extended(shaped_stream, remote_id, &payload).await;
                                 }
                             }
                         }
@@ -260,7 +260,7 @@ async fn download_piece(
                 continue;
             }
 
-            result = timeout(READ_TICK, PeerMessage::read_from(stream)) => result,
+            result = timeout(READ_TICK, PeerMessage::read_from(shaped_stream)) => result,
         };
         match read_result {
             Ok(Ok(msg)) => match msg {
@@ -270,14 +270,14 @@ async fn download_piece(
                 PeerMessage::Interested => {
                     state.peer_interested = true;
                     if state.am_choking {
-                        let _ = PeerMessage::send_unchoke(stream).await;
+                        let _ = PeerMessage::send_unchoke(shaped_stream).await;
                         state.am_choking = false;
                     }
                 }
                 PeerMessage::NotInterested => {
                     state.peer_interested = false;
                     if !state.am_choking {
-                        let _ = PeerMessage::send_choke(stream).await;
+                        let _ = PeerMessage::send_choke(shaped_stream).await;
                         state.am_choking = true;
                     }
                 }
@@ -318,7 +318,7 @@ async fn download_piece(
                         .is_ok()
                     {
                         if let Ok(Some(block)) = reply_rx.await {
-                            if let Err(err) = PeerMessage::send_piece(stream, index, begin, &block).await {
+                            if let Err(err) = PeerMessage::send_piece(shaped_stream, index, begin, &block).await {
                                 bail!("failed to send piece {}: {err}", index);
                             }
                         }

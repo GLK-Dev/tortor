@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct NodeId(pub [u8; 20]);
 
 impl NodeId {
@@ -35,7 +36,7 @@ impl NodeId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contact {
     pub id: NodeId,
     pub addr: SocketAddr,

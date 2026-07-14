@@ -27,6 +27,7 @@ pub struct DhtSearch {
     pub local_id: NodeId,
     pub short_list: Vec<SearchContact>,
     pub cmd_tx: mpsc::Sender<DhtCommand>,
+    pub manager_tx: mpsc::Sender<crate::net::dht::actor::DhtManagerCommand>,
     pub swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
 }
 
@@ -37,6 +38,7 @@ impl DhtSearch {
         initial_nodes: Vec<Contact>,
         cmd_tx: mpsc::Sender<DhtCommand>,
         swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
+        manager_tx: mpsc::Sender<crate::net::dht::actor::DhtManagerCommand>,
     ) -> Self {
         let mut short_list: Vec<SearchContact> = initial_nodes
             .into_iter()
@@ -54,6 +56,7 @@ impl DhtSearch {
             short_list,
             cmd_tx,
             swarm_tx,
+            manager_tx,
         }
     }
 
@@ -128,6 +131,7 @@ impl DhtSearch {
                                         if let Some(addr) = addrs_part.into_iter().next() {
                                             let contact = Contact { id: NodeId(id), addr };
                                             
+                                            let _ = self.manager_tx.send(crate::net::dht::actor::DhtManagerCommand::InsertNode(contact.clone())).await;
                                             if !self.short_list.iter().any(|existing| existing.contact.id == contact.id) {
                                                 self.short_list.push(SearchContact {
                                                     contact,

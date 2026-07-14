@@ -9,12 +9,14 @@ use crate::net::swarm::SwarmEvent;
 
 pub enum DhtManagerCommand {
     StartSearch(NodeId),
+    InsertNode(Contact),
 }
 
 pub struct DhtManager {
     local_id: NodeId,
     routing_table: RoutingTable,
     cmd_rx: mpsc::Receiver<DhtManagerCommand>,
+    cmd_tx: mpsc::Sender<DhtManagerCommand>,
     server_cmd_tx: mpsc::Sender<DhtCommand>,
     swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
 }
@@ -55,6 +57,7 @@ impl DhtManager {
             local_id,
             routing_table,
             cmd_rx,
+            cmd_tx: cmd_tx.clone(),
             server_cmd_tx,
             swarm_tx,
         };
@@ -87,9 +90,13 @@ impl DhtManager {
                                 k_nodes,
                                 self.server_cmd_tx.clone(),
                                 self.swarm_tx.clone(),
+                                self.cmd_tx.clone(),
                             );
                             
                             tokio::spawn(search.run());
+                        }
+                        Some(DhtManagerCommand::InsertNode(contact)) => {
+                            self.routing_table.insert(contact);
                         }
                         None => {
                             info!("DhtManager command channel closed.");

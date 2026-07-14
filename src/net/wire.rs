@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use crate::net::transport::PeerStream;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub enum PeerMessage {
 }
 
 impl PeerMessage {
-    pub async fn read_from(stream: &mut TcpStream) -> Result<Self> {
+    pub async fn read_from(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>) -> Result<Self> {
         let len = stream
             .read_u32()
             .await
@@ -140,19 +140,19 @@ impl PeerMessage {
         }
     }
 
-    pub async fn send_choke(stream: &mut TcpStream) -> Result<()> {
+    pub async fn send_choke(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>) -> Result<()> {
         let msg = [0u8, 0, 0, 1, 0];
         stream.write_all(&msg).await.context("failed to send Choke")?;
         Ok(())
     }
 
-    pub async fn send_unchoke(stream: &mut TcpStream) -> Result<()> {
+    pub async fn send_unchoke(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>) -> Result<()> {
         let msg = [0u8, 0, 0, 1, 1];
         stream.write_all(&msg).await.context("failed to send Unchoke")?;
         Ok(())
     }
 
-    pub async fn send_interested(stream: &mut TcpStream) -> Result<()> {
+    pub async fn send_interested(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>) -> Result<()> {
         let msg = [0u8, 0, 0, 1, 2];
         stream
             .write_all(&msg)
@@ -162,7 +162,7 @@ impl PeerMessage {
     }
 
     pub async fn send_request(
-        stream: &mut TcpStream,
+        stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
         index: u32,
         begin: u32,
         length: u32,
@@ -181,7 +181,7 @@ impl PeerMessage {
         Ok(())
     }
 
-    pub async fn send_have(stream: &mut TcpStream, piece_index: u32) -> Result<()> {
+    pub async fn send_have(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>, piece_index: u32) -> Result<()> {
         let mut msg = [0u8; 9];
         msg[0..4].copy_from_slice(&5u32.to_be_bytes());
         msg[4] = 4;
@@ -194,7 +194,7 @@ impl PeerMessage {
         Ok(())
     }
 
-    pub async fn send_bitfield(stream: &mut TcpStream, bitfield: &[u8]) -> Result<()> {
+    pub async fn send_bitfield(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>, bitfield: &[u8]) -> Result<()> {
         let len = 1u32 + bitfield.len() as u32;
         stream
             .write_u32(len)
@@ -212,7 +212,7 @@ impl PeerMessage {
     }
 
     pub async fn send_piece(
-        stream: &mut TcpStream,
+        stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
         index: u32,
         begin: u32,
         block: &[u8],
@@ -245,7 +245,7 @@ impl PeerMessage {
 
 
 
-    pub async fn send_extended(stream: &mut TcpStream, extended_id: u8, payload: &[u8]) -> Result<()> {
+    pub async fn send_extended(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>, extended_id: u8, payload: &[u8]) -> Result<()> {
         let len = 2u32 + payload.len() as u32;
         stream.write_u32(len).await?;
         stream.write_u8(20).await?;
@@ -255,7 +255,7 @@ impl PeerMessage {
     }
 }
 
-async fn drain_payload(stream: &mut TcpStream, payload_len: usize) -> Result<()> {
+async fn drain_payload(stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>, payload_len: usize) -> Result<()> {
     if payload_len == 0 {
         return Ok(());
     }

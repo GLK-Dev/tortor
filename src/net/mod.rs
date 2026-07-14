@@ -9,3 +9,7 @@ pub mod wire;
 pub mod pex;
 
 pub mod dht;
+
+pub mod transport;
+
+pub mod shaper;

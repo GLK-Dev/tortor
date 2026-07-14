@@ -72,6 +72,11 @@ pub async fn run_swarm_manager(
         let _ = dht_cmd_tx.send(crate::net::dht::actor::DhtManagerCommand::StartSearch(crate::net::dht::routing::NodeId(info_hash))).await;
     }
 
+
+    let (server_config, client_config) = crate::crypto::tls::configure_quic().expect("Failed to configure QUIC");
+    let mut quic_endpoint = quinn::Endpoint::server(server_config, format!("0.0.0.0:{}", listen_port).parse().unwrap()).expect("Failed to bind QUIC");
+    quic_endpoint.set_default_client_config(client_config);
+    let quic_endpoint = Arc::new(quic_endpoint);
     let mut swarm_state = SwarmState {
         last_announce: None,
         announce_in_progress: false,
@@ -224,6 +229,7 @@ pub async fn run_swarm_manager(
                     let expected_hashes_cloned = Arc::clone(&expected_hashes);
                     let ui_sender_cloned = ui_sender.clone();
                     let coord_sender_cloned = coord_sender.clone();
+                    let quic_endpoint_cloned = quic_endpoint.clone();
                     let event_tx_cloned = event_tx.clone();
                     let local_shutdown_rx = shutdown_tx.subscribe();
                     let local_announce_rx = announce_tx.subscribe();
@@ -242,6 +248,7 @@ pub async fn run_swarm_manager(
                             local_shutdown_rx,
                             Some(event_tx_cloned.clone()),
                             local_announce_rx,
+                            quic_endpoint_cloned,
                         )
                         .await;
 
