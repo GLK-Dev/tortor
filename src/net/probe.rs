@@ -56,6 +56,7 @@ pub async fn execute_probe(
         shutdown_rx,
         swarm_event_tx,
         announce_rx,
+        remote.supports_extension_protocol(),
     )
     .await?;
 

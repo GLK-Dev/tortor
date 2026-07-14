@@ -1,4 +1,5 @@
 pub mod assembler;
+pub mod metadata_assembler;
 pub mod bencode;
 pub mod command;
 pub mod coordinator;

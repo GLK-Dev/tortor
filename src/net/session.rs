@@ -12,7 +12,7 @@ use crate::core::coordinator::CoordinatorMsg;
 use crate::core::command::{CoreMessage, SessionTelemetry};
 use crate::crypto::dispatch::{hash_piece, HashAlgorithm};
 use crate::net::swarm::SwarmEvent;
-use crate::net::wire::PeerMessage;
+use crate::net::wire::{PeerMessage, ExtendedHandshakeDict};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TICK: Duration = Duration::from_millis(1500);
@@ -49,8 +49,18 @@ pub async fn run_download_session(
     mut shutdown_rx: broadcast::Receiver<()>,
     swarm_event_tx: Option<mpsc::UnboundedSender<SwarmEvent>>,
     mut announce_rx: broadcast::Receiver<u32>,
+    remote_supports_extensions: bool,
 ) -> Result<()> {
     let mut state = PeerState::new();
+
+    if remote_supports_extensions {
+        let mut m = std::collections::HashMap::new();
+        m.insert("ut_metadata".to_string(), 1);
+        let ext_dict = ExtendedHandshakeDict { m, metadata_size: None };
+        if let Ok(payload) = serde_bencode::to_bytes(&ext_dict) {
+            let _ = PeerMessage::send_extended(stream, 0, &payload).await;
+        }
+    }
 
     timeout(IO_TIMEOUT, PeerMessage::send_interested(stream))
         .await
@@ -237,6 +247,13 @@ async fn download_piece(
                     if !state.am_choking {
                         let _ = PeerMessage::send_choke(stream).await;
                         state.am_choking = true;
+                    }
+                }
+                PeerMessage::Extended { id, payload } => {
+                    if id == 0 {
+                        if let Ok(ext_dict) = serde_bencode::from_bytes::<ExtendedHandshakeDict>(&payload) {
+                            info!("Extended handshake from {}: {:?}", peer_addr, ext_dict);
+                        }
                     }
                 }
                 PeerMessage::Have(_) | PeerMessage::Bitfield(_) => {}

@@ -1,6 +1,14 @@
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendedHandshakeDict {
+    #[serde(default)]
+    pub m: std::collections::HashMap<String, u8>,
+    pub metadata_size: Option<usize>,
+}
 
 #[derive(Debug, Clone)]
 pub enum PeerMessage {
@@ -13,6 +21,7 @@ pub enum PeerMessage {
     Bitfield(Vec<u8>),
     Request { index: u32, begin: u32, length: u32 },
     Piece { index: u32, begin: u32, block: Vec<u8> },
+    Extended { id: u8, payload: Vec<u8> },
 }
 
 impl PeerMessage {
@@ -112,6 +121,17 @@ impl PeerMessage {
                     begin,
                     block,
                 })
+            }
+            20 => {
+                if payload_len < 1 {
+                    bail!("invalid EXTENDED payload length: {payload_len}");
+                }
+                let extended_id = stream.read_u8().await.context("failed to read EXTENDED id")?;
+                let mut payload = vec![0u8; payload_len - 1];
+                if payload_len > 1 {
+                    stream.read_exact(&mut payload).await.context("failed to read EXTENDED payload")?;
+                }
+                Ok(PeerMessage::Extended { id: extended_id, payload })
             }
             _ => {
                 drain_payload(stream, payload_len).await?;
@@ -220,6 +240,17 @@ impl PeerMessage {
             .await
             .context("failed to send Piece block")?;
 
+        Ok(())
+    }
+
+
+
+    pub async fn send_extended(stream: &mut TcpStream, extended_id: u8, payload: &[u8]) -> Result<()> {
+        let len = 2u32 + payload.len() as u32;
+        stream.write_u32(len).await?;
+        stream.write_u8(20).await?;
+        stream.write_u8(extended_id).await?;
+        stream.write_all(payload).await?;
         Ok(())
     }
 }

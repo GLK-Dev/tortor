@@ -226,11 +226,11 @@ fn background_task(
                 ).await {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer);
+                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
-                            manager,
-                            disk_writer,
+                            state,
                             resume_path_c,
                             shutdown_rx_c,
                             announce_tx_c,
@@ -267,11 +267,11 @@ fn background_task(
                 ).await {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer);
+                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
-                            manager,
-                            disk_writer,
+                            state,
                             resume_path_c,
                             shutdown_rx_c,
                             announce_tx_c,
