@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -16,7 +17,6 @@ use crate::core::manager::TorrentManager;
 use crate::core::peer_id::generate_peer_id;
 use crate::core::resume::load_fastresume;
 use crate::core::torrent::TorrentMeta;
-use crate::net::probe;
 use crate::net::swarm;
 use crate::net::tracker;
 
@@ -36,23 +36,40 @@ struct PeerRow {
     telemetry: Option<SessionTelemetry>,
 }
 
-pub fn run_dashboard(initial_torrent_path: Option<PathBuf>, listen_port: u16) -> Result<()> {
-    let (msg_tx, msg_rx) = mpsc::channel::<CoreMessage>();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
+fn ascii_progress_bar(progress: f32, width: usize) -> String {
+    let p = progress.clamp(0.0, 1.0);
+    let filled = (p * width as f32).round() as usize;
+    let empty = width.saturating_sub(filled);
+    let filled_str = "█".repeat(filled);
+    let empty_str = "░".repeat(empty);
+    format!("[{}{}] {}%", filled_str, empty_str, (p * 100.0) as u32)
+}
 
-    let native_options = eframe::NativeOptions::default();
+pub fn run_dashboard(initial_torrent_path: Option<PathBuf>, listen_port: u16, output_dir: PathBuf) -> Result<()> {
+    let mut native_options = eframe::NativeOptions::default();
+    
+    // Load window icon
+    let icon_data = include_bytes!("../../Images/tortor_icon.png");
+    if let Ok(image) = image::load_from_memory(icon_data) {
+        let image = image.into_rgba8();
+        let (width, height) = image.dimensions();
+        native_options.viewport = egui::ViewportBuilder::default()
+            .with_icon(Arc::new(egui::IconData {
+                rgba: image.into_raw(),
+                width,
+                height,
+            }));
+    }
+
     eframe::run_native(
-        "TorTor Dashboard",
+        "TorTor Download Manager",
         native_options,
         Box::new(move |_| {
-            Ok(Box::new(TorTorApp::new(
-                msg_tx.clone(),
-                msg_rx,
-                cmd_tx.clone(),
-                cmd_rx,
-                initial_torrent_path.clone(),
-                listen_port,
-            )))
+            let mut app = TorTorApp::new(listen_port);
+            if let Some(path) = initial_torrent_path {
+                app.start_core(path, output_dir);
+            }
+            Ok(Box::new(app))
         }),
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
@@ -61,26 +78,63 @@ pub fn run_dashboard(initial_torrent_path: Option<PathBuf>, listen_port: u16) ->
 }
 
 fn background_task(
-    tx: mpsc::Sender<CoreMessage>,
+    session_id: usize,
+    tx: mpsc::Sender<(usize, CoreMessage)>,
     command_rx: Receiver<CoreCommand>,
     torrent_path: PathBuf,
     listen_port: u16,
+    output_dir: PathBuf,
 ) -> Result<()> {
-    let meta = bencode::parse_torrent_file(&torrent_path)?;
-    tx.send(CoreMessage::TorrentLoaded(meta.clone())).ok();
+    let meta = match bencode::parse_torrent_file(&torrent_path) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = tx.send((session_id, CoreMessage::Error(format!("Failed to parse torrent: {e}"))));
+            return Err(e.into());
+        }
+    };
+    tx.send((session_id, CoreMessage::TorrentLoaded(meta.clone()))).ok();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    tx.send((session_id, CoreMessage::Status(
+        "Ready to start. Press Start Swarm to begin allocation and download.".to_string(),
+    )))
+    .ok();
+
+    // Wait for the user to press "Start Swarm" or "StopAll"
+    let mut started = false;
+    while let Ok(command) = command_rx.recv() {
+        match command {
+            CoreCommand::StartSwarm => {
+                started = true;
+                break;
+            }
+            CoreCommand::StopAll => {
+                tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    if !started {
+        return Ok(());
+    }
 
     let tracker_url = meta.announce.clone();
-    if !(tracker_url.starts_with("http://") || tracker_url.starts_with("https://")) {
-        tx.send(CoreMessage::Status(format!(
-            "Tracker is not HTTP/HTTPS, skipping announce: {tracker_url}"
-        )))
+    if !(tracker_url.starts_with("http://") || tracker_url.starts_with("https://") || tracker_url.starts_with("udp://")) {
+        tx.send((session_id, CoreMessage::Status(format!(
+            "Tracker is not HTTP/HTTPS/UDP, skipping announce: {tracker_url}"
+        ))))
         .ok();
         return Ok(());
     }
 
-    tx.send(CoreMessage::Status(format!(
+    tx.send((session_id, CoreMessage::Status(format!(
         "Announcing to tracker: {tracker_url}"
-    )))
+    ))))
     .ok();
 
     let left = meta
@@ -88,27 +142,23 @@ fn background_task(
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
     let peer_id = generate_peer_id();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
     let peers = runtime.block_on(async {
         tracker::announce(&tracker_url, &meta.info_hash, &peer_id, listen_port, left).await
     })?;
 
     for peer in &peers {
-        tx.send(CoreMessage::PeerFound(peer.addr)).ok();
+        tx.send((session_id, CoreMessage::PeerFound(peer.addr))).ok();
     }
-    tx.send(CoreMessage::TrackerDone(peers.len())).ok();
-    tx.send(CoreMessage::Status(
+    tx.send((session_id, CoreMessage::TrackerDone(peers.len()))).ok();
+    tx.send((session_id, CoreMessage::Status(
         "Core worker is ready for probe commands".to_string(),
-    ))
+    )))
     .ok();
 
     if meta.pieces.is_empty() {
-        tx.send(CoreMessage::Status(
+        tx.send((session_id, CoreMessage::Status(
             "Torrent has no piece hashes; download data-path disabled".to_string(),
-        ))
+        )))
         .ok();
         return Ok(());
     }
@@ -119,7 +169,7 @@ fn background_task(
     let ui_bridge_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(msg) = ui_async_rx.recv().await {
-            let _ = ui_bridge_tx.send(msg);
+            let _ = ui_bridge_tx.send((session_id, msg));
         }
     });
 
@@ -138,19 +188,19 @@ fn background_task(
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
         Ok(Some(state)) => {
             let mgr = state.clone().into_manager(meta.pieces_count);
-            tx.send(CoreMessage::Status(format!(
+            tx.send((session_id, CoreMessage::Status(format!(
                 "Fast resume loaded: {} completed pieces",
                 mgr.completed_count()
-            )))
+            ))))
             .ok();
             mgr
         }
         Ok(None) => TorrentManager::new(meta.pieces_count),
         Err(err) => {
-            tx.send(CoreMessage::Status(format!(
+            tx.send((session_id, CoreMessage::Status(format!(
                 "Fast resume load failed, starting fresh: {}",
                 err
-            )))
+            ))))
             .ok();
             TorrentManager::new(meta.pieces_count)
         }
@@ -171,213 +221,118 @@ fn background_task(
     let total_length = meta.total_length;
     let available_peers: std::collections::VecDeque<SocketAddr> =
         peers.iter().map(|p| p.addr).collect();
-    let mut swarm_started = false;
 
-    tx.send(CoreMessage::Status(format!(
-        "Swarm is ready. Press Start Swarm to begin autonomous download"
-    )))
-    .ok();
+    let info_hash = meta.info_hash;
+    let swarm_peer_id = peer_id;
+
+    let shutdown_tx_for_swarm = shutdown_tx.clone();
+    runtime.spawn(async move {
+        swarm::run_swarm_manager(
+            available_peers,
+            tracker_url,
+            info_hash,
+            swarm_peer_id,
+            listen_port,
+            left,
+            expected_hashes,
+            piece_length,
+            total_length,
+            ui_async_tx,
+            coord_tx,
+            shutdown_tx_for_swarm,
+            announce_tx,
+        )
+        .await;
+    });
 
     while let Ok(command) = command_rx.recv() {
-        match command {
-            CoreCommand::StartSwarm => {
-                if swarm_started {
-                    tx.send(CoreMessage::Status("Swarm is already running".to_string()))
-                        .ok();
-                    continue;
-                }
-
-                swarm_started = true;
-                let info_hash = meta.info_hash;
-                let swarm_peer_id = peer_id;
-                let expected_hashes = Arc::clone(&expected_hashes);
-                let ui_async_tx = ui_async_tx.clone();
-                let coord_tx = coord_tx.clone();
-                let shutdown_tx = shutdown_tx.clone();
-                let announce_tx_for_swarm = announce_tx.clone();
-                let available = available_peers.clone();
-                let tracker_url_for_swarm = tracker_url.clone();
-
-                runtime.spawn(async move {
-                    swarm::run_swarm_manager(
-                        available,
-                        tracker_url_for_swarm,
-                        info_hash,
-                        swarm_peer_id,
-                        listen_port,
-                        left,
-                        expected_hashes,
-                        piece_length,
-                        total_length,
-                        ui_async_tx,
-                        coord_tx,
-                        shutdown_tx,
-                        announce_tx_for_swarm,
-                    )
-                    .await;
-                });
-            }
-            CoreCommand::ProbePeer(addr) => {
-                if swarm_started {
-                    tx.send(CoreMessage::Status(
-                        "Ignoring manual worker start while swarm is running".to_string(),
-                    ))
-                    .ok();
-                    continue;
-                }
-
-                tx.send(CoreMessage::ProbeQueued(addr)).ok();
-
-                let tx_clone = tx.clone();
-                let info_hash = meta.info_hash;
-                let probe_peer_id = peer_id;
-                let expected_hashes = Arc::clone(&expected_hashes);
-                let ui_async_tx = ui_async_tx.clone();
-                let coord_tx = coord_tx.clone();
-                let shutdown_rx = shutdown_tx.subscribe();
-                let announce_tx_for_probe = announce_tx.clone();
-
-                runtime.spawn(async move {
-                    let _ = tx_clone.send(CoreMessage::ProbeStarted(addr));
-                    let result = probe::execute_probe(
-                        addr,
-                        info_hash,
-                        probe_peer_id,
-                        expected_hashes,
-                        piece_length,
-                        total_length,
-                        ui_async_tx,
-                        coord_tx,
-                        shutdown_rx,
-                        None,
-                        announce_tx_for_probe.subscribe(),
-                    )
-                    .await;
-
-                    match result {
-                        Ok(status) => {
-                            let _ = tx_clone.send(CoreMessage::ProbeSucceeded(addr, status));
-                        }
-                        Err(err) => {
-                            let _ = tx_clone.send(CoreMessage::ProbeFailed(addr, err.to_string()));
-                        }
-                    }
-                });
-            }
-            CoreCommand::StopAll => {
-                tx.send(CoreMessage::Status("Stop requested: shutting down workers".to_string()))
-                    .ok();
-                let _ = shutdown_tx.send(());
-                runtime.block_on(async {
-                    sleep(Duration::from_millis(800)).await;
-                });
-                tx.send(CoreMessage::ShutdownComplete).ok();
-                break;
-            }
+        if let CoreCommand::StopAll = command {
+            tx.send((session_id, CoreMessage::Status("Stop requested: shutting down workers".to_string()))).ok();
+            let _ = shutdown_tx.send(());
+            runtime.block_on(async {
+                sleep(Duration::from_millis(800)).await;
+            });
+            tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+            break;
         }
     }
 
     Ok(())
 }
 
-struct TorTorApp {
-    show_about: bool,
-    tx: Sender<CoreMessage>,
-    rx: Receiver<CoreMessage>,
+struct TorrentSessionState {
+    id: usize,
+    output_dir: PathBuf,
+    selected_torrent: PathBuf,
     command_tx: Sender<CoreCommand>,
-    command_rx: Option<Receiver<CoreCommand>>,
     peers: Vec<PeerRow>,
     logs: Vec<String>,
     meta: Option<TorrentMeta>,
     global_progress: f32,
     status: String,
     is_shutting_down: bool,
+    delete_requested: bool,
     swarm_started: bool,
-    core_started: bool,
+    expanded: bool,
+}
+
+struct TorTorApp {
+    show_about: bool,
+    tx: Sender<(usize, CoreMessage)>,
+    rx: Receiver<(usize, CoreMessage)>,
+    sessions: HashMap<usize, TorrentSessionState>,
+    next_id: usize,
     listen_port: u16,
-    selected_torrent: Option<PathBuf>,
 }
 
 impl TorTorApp {
-    fn new(
-        tx: Sender<CoreMessage>,
-        rx: Receiver<CoreMessage>,
-        command_tx: Sender<CoreCommand>,
-        command_rx: Receiver<CoreCommand>,
-        initial_torrent_path: Option<PathBuf>,
-        listen_port: u16,
-    ) -> Self {
-        let mut app = Self {
+    fn new(listen_port: u16) -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
             show_about: false,
             tx,
             rx,
-            command_tx,
-            command_rx: Some(command_rx),
-            peers: Vec::new(),
-            logs: vec!["GUI started. Waiting for core events...".to_string()],
-            meta: None,
-            global_progress: 0.0,
-            status: "Ready".to_string(),
-            is_shutting_down: false,
-            swarm_started: false,
-            core_started: false,
+            sessions: HashMap::new(),
+            next_id: 1,
             listen_port,
-            selected_torrent: None,
-        };
-
-        if let Some(path) = initial_torrent_path {
-            app.start_core(path);
         }
-
-        app
     }
 
-    fn start_core(&mut self, torrent_path: PathBuf) {
-        if self.core_started {
-            return;
-        }
+    fn start_core(&mut self, torrent_path: PathBuf, output_dir: PathBuf) {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
+        let id = self.next_id;
+        self.next_id += 1;
 
-        let Some(command_rx) = self.command_rx.take() else {
-            self.logs
-                .push("Core command channel is unavailable".to_string());
-            return;
+        let session = TorrentSessionState {
+            id,
+            output_dir: output_dir.clone(),
+            selected_torrent: torrent_path.clone(),
+            command_tx: cmd_tx,
+            peers: Vec::new(),
+            logs: vec![format!("Loading torrent: {}", torrent_path.display())],
+            meta: None,
+            global_progress: 0.0,
+            status: format!("Starting core for {}", torrent_path.display()),
+            is_shutting_down: false,
+            delete_requested: false,
+            swarm_started: false,
+            expanded: true,
         };
+
+        self.sessions.insert(id, session);
 
         let tx = self.tx.clone();
         let listen_port = self.listen_port;
-        let selected = torrent_path.clone();
-        self.selected_torrent = Some(selected.clone());
-        self.status = format!("Starting core for {}", selected.display());
-        self.logs
-            .push(format!("Loading torrent: {}", selected.display()));
 
         std::thread::spawn(move || {
-            if let Err(err) = background_task(tx.clone(), command_rx, selected, listen_port) {
-                let _ = tx.send(CoreMessage::Error(err.to_string()));
+            if let Err(err) = background_task(id, tx.clone(), cmd_rx, torrent_path, listen_port, output_dir) {
+                let _ = tx.send((id, CoreMessage::Error(err.to_string())));
             }
         });
-
-        self.core_started = true;
     }
 
-    fn request_shutdown(&mut self) {
-        if self.is_shutting_down {
-            return;
-        }
-
-        if !self.core_started {
-            return;
-        }
-
-        self.is_shutting_down = true;
-        self.status = "Stopping workers and persisting state...".to_string();
-        self.logs
-            .push("Shutdown requested: waiting for graceful stop".to_string());
-        let _ = self.command_tx.send(CoreCommand::StopAll);
-    }
-
-    fn update_peer_state(&mut self, addr: SocketAddr, state: ProbeState) {
-        if let Some(row) = self.peers.iter_mut().find(|row| row.addr == addr) {
+    fn update_peer_state(session: &mut TorrentSessionState, addr: SocketAddr, state: ProbeState) {
+        if let Some(row) = session.peers.iter_mut().find(|row| row.addr == addr) {
             row.state = state;
         }
     }
@@ -392,92 +347,115 @@ impl TorTorApp {
         }
     }
 
-    fn pump_messages(&mut self) -> bool {
-        let mut shutdown_complete = false;
+    fn pump_messages(&mut self) -> Vec<usize> {
+        let mut completed_shutdowns = Vec::new();
 
-        while let Ok(msg) = self.rx.try_recv() {
+        while let Ok((id, msg)) = self.rx.try_recv() {
+            let Some(session) = self.sessions.get_mut(&id) else { continue; };
             match msg {
                 CoreMessage::Status(text) => {
-                    self.status = text.clone();
-                    self.logs.push(text);
+                    session.status = text.clone();
+                    session.logs.push(text);
                 }
                 CoreMessage::TorrentLoaded(meta) => {
-                    self.logs
-                        .push(format!("Loaded torrent: {}", meta.name));
-                    self.meta = Some(meta);
+                    session.logs.push(format!("Loaded torrent: {}", meta.name));
+                    session.meta = Some(meta);
                 }
                 CoreMessage::GlobalProgress(progress) => {
-                    self.global_progress = progress.clamp(0.0, 1.0);
+                    session.global_progress = progress.clamp(0.0, 1.0);
                 }
                 CoreMessage::DownloadComplete => {
-                    self.global_progress = 1.0;
-                    self.status = "Download complete".to_string();
-                    self.logs.push("All pieces were downloaded".to_string());
+                    session.global_progress = 1.0;
+                    session.status = "Download complete".to_string();
+                    session.logs.push("All pieces were downloaded".to_string());
                 }
                 CoreMessage::ShutdownComplete => {
-                    self.status = "Shutdown complete".to_string();
-                    self.logs.push("All workers stopped safely".to_string());
-                    shutdown_complete = true;
+                    completed_shutdowns.push(id);
                 }
-                CoreMessage::PeerFound(addr) => self.peers.push(PeerRow {
+                CoreMessage::PeerFound(addr) => session.peers.push(PeerRow {
                     addr,
                     state: ProbeState::Idle,
                     telemetry: None,
                 }),
                 CoreMessage::TrackerDone(count) => {
-                    self.logs.push(format!("Tracker returned {count} peers"));
+                    session.logs.push(format!("Tracker returned {count} peers"));
                 }
                 CoreMessage::ProbeQueued(addr) => {
-                    self.update_peer_state(addr, ProbeState::Queued);
-                    self.logs.push(format!("Probe queued: {addr}"));
+                    Self::update_peer_state(session, addr, ProbeState::Queued);
                 }
                 CoreMessage::ProbeStarted(addr) => {
-                    self.update_peer_state(addr, ProbeState::Probing);
-                    self.logs.push(format!("Probe started: {addr}"));
+                    Self::update_peer_state(session, addr, ProbeState::Probing);
                 }
                 CoreMessage::ProbeSucceeded(addr, status) => {
-                    self.update_peer_state(addr, ProbeState::Success(status.clone()));
-                    self.logs.push(format!("Probe succeeded: {addr} | {status}"));
+                    Self::update_peer_state(session, addr, ProbeState::Success(status));
                 }
                 CoreMessage::ProbeFailed(addr, err) => {
-                    self.update_peer_state(addr, ProbeState::Failed(err.clone()));
-                    self.logs.push(format!("Probe failed for {addr}: {err}"));
+                    Self::update_peer_state(session, addr, ProbeState::Failed(err));
                 }
                 CoreMessage::TelemetryUpdate(addr, telemetry) => {
-                    if let Some(row) = self.peers.iter_mut().find(|row| row.addr == addr) {
+                    if let Some(row) = session.peers.iter_mut().find(|row| row.addr == addr) {
                         row.telemetry = Some(telemetry);
                     }
                 }
                 CoreMessage::Error(err) => {
-                    self.logs.push(format!("Error: {err}"));
+                    session.logs.push(format!("Error: {err}"));
                 }
             }
         }
 
-        shutdown_complete
+        completed_shutdowns
     }
 }
 
 impl eframe::App for TorTorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_visuals(egui::Visuals::dark());
+        let mut visuals = egui::Visuals::dark();
+        visuals.window_fill = Color32::from_rgb(10, 15, 26);
+        visuals.panel_fill = Color32::from_rgb(10, 15, 26);
+        visuals.selection.bg_fill = Color32::from_rgb(0, 210, 255);
+        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 209));
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 25, 40);
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(25, 40, 60);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(0, 210, 255);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(0, 255, 209);
+        visuals.override_text_color = Some(Color32::from_rgb(230, 240, 255));
+        ctx.set_visuals(visuals);
         
         let mut about_open = self.show_about;
         egui::Window::new("About TorTor")
             .open(&mut about_open)
             .collapsible(false)
             .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.heading("TorTor 1.0.0");
-                ui.label("High-performance BitTorrent client written in Rust.");
-                ui.add_space(8.0);
-                ui.label("Features:");
-                ui.label("- Dynamic SIMD dispatch (AVX2/SSE4.1)");
-                ui.label("- Multi-file torrent support");
-                ui.label("- Memory-safe piece assembler");
-                ui.label("- Zero-copy I/O with Tokio");
-                ui.add_space(8.0);
-                ui.label("Created by: Vitaliy Golik <GLK Dev>");
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
+                    ui.label(RichText::new("Version 1.2.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
+                    ui.add_space(15.0);
+                });
+                
+                ui.group(|ui| {
+                    ui.label(RichText::new("🚀 Key Features:").strong().color(Color32::WHITE));
+                    ui.add_space(5.0);
+                    let features = [
+                        "⚡ Dynamic SIMD dispatch (AVX2/SSE4.1)",
+                        "📂 Multi-file torrent & Session isolation",
+                        "🛡️ Memory-safe piece assembler",
+                        "🔄 Zero-copy I/O with Tokio",
+                    ];
+                    for f in features {
+                        ui.label(RichText::new(f).color(Color32::from_rgb(200, 220, 255)));
+                    }
+                });
+                
+                ui.add_space(15.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Created by: mjojo <GLK Dev>").size(12.0).color(Color32::from_rgb(100, 150, 200)));
+                    ui.add_space(5.0);
+                });
             });
         self.show_about = about_open;
 
@@ -489,172 +467,156 @@ impl eframe::App for TorTorApp {
             });
         });
 
-        if self.core_started && ctx.input(|i| i.viewport().close_requested()) && !self.is_shutting_down {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.request_shutdown();
+        // Close all if app is closed
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let mut all_shutting_down = true;
+            for session in self.sessions.values_mut() {
+                if !session.is_shutting_down {
+                    all_shutting_down = false;
+                    session.is_shutting_down = true;
+                    let _ = session.command_tx.send(CoreCommand::StopAll);
+                }
+            }
+            if !all_shutting_down && !self.sessions.is_empty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         }
 
-        let shutdown_complete = self.pump_messages();
-        if shutdown_complete {
+        let completed_shutdowns = self.pump_messages();
+        for id in completed_shutdowns {
+            if let Some(session) = self.sessions.remove(&id) {
+                if session.delete_requested {
+                    if let Some(meta) = &session.meta {
+                        let target_path = session.output_dir.join(&meta.name);
+                        let _ = std::fs::remove_dir_all(&target_path);
+                        let _ = std::fs::remove_file(&target_path);
+                    }
+                    let _ = std::fs::remove_file(session.selected_torrent.with_extension("fastresume"));
+                    let _ = std::fs::remove_file(session.selected_torrent.with_extension("download.part"));
+                }
+            }
+        }
+
+        if self.sessions.is_empty() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
 
-        if self.is_shutting_down {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.heading("Stopping modules and saving state...");
-                    ui.add_space(12.0);
-                    ui.spinner();
-                });
-            });
-            ctx.request_repaint();
-            return;
-        }
-
         egui::CentralPanel::default().show(ctx, |ui| {
-            if !self.core_started {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("TorTor");
-                        ui.label("Select a .torrent file to start");
-                        ui.add_space(12.0);
-
-                        if ui
-                            .add(egui::Button::new("Open .torrent file").min_size(egui::vec2(220.0, 42.0)))
-                            .clicked()
+            ui.horizontal(|ui| {
+                ui.heading("TorTor Download Manager");
+                if ui.button("+ Add Torrent").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Torrent Files", &["torrent"])
+                        .pick_file()
+                    {
+                        if let Some(dir) = rfd::FileDialog::new()
+                            .set_title("Select Download Directory")
+                            .pick_folder()
                         {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Torrent Files", &["torrent"])
-                                .pick_file()
-                            {
-                                self.start_core(path);
-                            }
+                            self.start_core(path, dir);
                         }
+                    }
+                }
+            });
+            ui.separator();
 
-                        if let Some(path) = &self.selected_torrent {
-                            ui.add_space(8.0);
-                            ui.label(format!("Selected: {}", path.display()));
-                        }
-                    });
+            if self.sessions.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label("No active downloads. Click '+ Add Torrent' to start.");
                 });
                 return;
             }
 
-            ui.heading("TorTor Core Dashboard");
-            ui.label(format!("Status: {}", self.status));
-            if ui
-                .add_enabled(!self.swarm_started, egui::Button::new("Start Swarm"))
-                .clicked()
-            {
-                self.swarm_started = true;
-                let _ = self.command_tx.send(CoreCommand::StartSwarm);
-            }
-            if ui.add_enabled(self.core_started, egui::Button::new("Stop All")).clicked() {
-                self.request_shutdown();
-            }
-            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut ids: Vec<usize> = self.sessions.keys().copied().collect();
+                ids.sort_unstable(); // Keep order consistent
 
-            ui.heading("TorTor Global Progress");
-            ui.add(egui::ProgressBar::new(self.global_progress).show_percentage());
-            ui.separator();
+                for id in ids {
+                    let session = self.sessions.get_mut(&id).unwrap();
+                    let name = session.meta.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "Loading...".to_string());
+                    
+                    let bg_color = if session.global_progress >= 1.0 {
+                        Color32::from_rgb(10, 70, 50) // completed: dark green-teal
+                    } else if session.is_shutting_down {
+                        Color32::from_rgb(70, 20, 30)
+                    } else {
+                        Color32::from_rgb(20, 35, 55) // downloading: dark blue slate
+                    };
 
-            if let Some(meta) = &self.meta {
-                ui.label(format!("Name: {}", meta.name));
-                ui.label(format!("Announce: {}", meta.announce));
-                ui.label(format!("Pieces: {}", meta.pieces_count));
-                ui.label(format!("Info hash: {}", meta.info_hash_hex()));
-            } else {
-                ui.label("Torrent metadata is loading...");
-            }
+                    let frame = egui::Frame::none()
+                        .fill(bg_color)
+                        .rounding(8.0)
+                        .inner_margin(12.0)
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0, 150, 200).linear_multiply(0.3)));
 
-            ui.separator();
-            ui.heading(format!("Peers ({})", self.peers.len()));
-            egui::ScrollArea::vertical()
-                .max_height(220.0)
-                .show(ui, |ui| {
-                    for row in &self.peers {
-                        let addr = row.addr;
-                        let state_text = Self::status_label(&row.state);
-                        let can_probe = !matches!(row.state, ProbeState::Probing);
-                        let piece_len = self
-                            .meta
-                            .as_ref()
-                            .and_then(|m| m.piece_len_at(0))
-                            .unwrap_or(1);
-
+                    frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.monospace(addr.to_string());
-                            ui.label(state_text);
+                            let icon = if session.expanded { "▼" } else { "▶" };
+                            let ascii_bar = ascii_progress_bar(session.global_progress, 15);
+                            let title = format!("{} {}  {}", icon, name, ascii_bar);
 
-                            if ui
-                                .add_enabled(can_probe && !self.swarm_started, egui::Button::new("Start Worker"))
-                                .clicked()
-                            {
-                                let _ = self.command_tx.send(CoreCommand::ProbePeer(addr));
+                            // The clickable bar
+                            let btn = ui.add_sized(
+                                [ui.available_width(), 35.0],
+                                egui::Button::new(RichText::new(title).size(18.0).color(if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(0, 210, 255) }))
+                                    .fill(Color32::TRANSPARENT)
+                            );
+
+                            if btn.clicked() {
+                                session.expanded = !session.expanded;
                             }
                         });
 
-                        if let Some(tel) = &row.telemetry {
-                            let progress = (tel.downloaded_bytes as f32 / piece_len as f32)
-                                .clamp(0.0, 1.0);
-                            let drops = tel.unexpected_blocks + tel.duplicate_blocks;
-
-                            let drop_color = if drops > 10 {
-                                Color32::RED
-                            } else if drops > 0 {
-                                Color32::YELLOW
-                            } else {
-                                Color32::GREEN
-                            };
-
-                            let retry_color = if tel.retries > 5 {
-                                Color32::YELLOW
-                            } else {
-                                Color32::LIGHT_GRAY
-                            };
-
+                        if session.expanded {
+                            ui.add_space(8.0);
+                            let status_color = if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(200, 220, 255) };
+                            
+                            ui.label(RichText::new(format!("📁 Path: {}", session.output_dir.display())).color(Color32::WHITE));
+                            ui.label(RichText::new(format!("🔗 Status: {}", session.status)).color(status_color));
+                            ui.label(RichText::new(format!("👥 Peers: {}", session.peers.len())).color(Color32::WHITE));
+                            
+                            if let Some(meta) = &session.meta {
+                                ui.label(RichText::new(format!("📦 Pieces: {}", meta.pieces_count)).color(Color32::LIGHT_GRAY));
+                            }
+                            
+                            ui.add_space(8.0);
+                            
                             ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::ProgressBar::new(progress)
-                                        .desired_width(180.0)
-                                        .text(format!(
-                                            "{} / {} B",
-                                            tel.downloaded_bytes, piece_len
-                                        )),
-                                );
-
-                                let ttfp = tel
-                                    .time_to_first_piece_ms
-                                    .map(|v| format!(" | TTFP: {} ms", v))
-                                    .unwrap_or_default();
-
-                                ui.label(
-                                    RichText::new(format!("In-flight: {}", tel.in_flight_requests))
-                                        .color(Color32::LIGHT_BLUE),
-                                );
-                                ui.label("|");
-                                ui.label(
-                                    RichText::new(format!("Retries: {}", tel.retries))
-                                        .color(retry_color),
-                                );
-                                ui.label("|");
-                                ui.label(RichText::new(format!("Drops: {}", drops)).color(drop_color));
-                                if !ttfp.is_empty() {
-                                    ui.label(ttfp);
+                                if ui.add_enabled(!session.swarm_started && !session.is_shutting_down, egui::Button::new("▶ Start Swarm")).clicked() {
+                                    session.swarm_started = true;
+                                    let _ = session.command_tx.send(CoreCommand::StartSwarm);
+                                }
+                                
+                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("⏹ Cancel & Close")).clicked() {
+                                    session.is_shutting_down = true;
+                                    let _ = session.command_tx.send(CoreCommand::StopAll);
+                                }
+                                
+                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("🗑 Delete Download Data")).clicked() {
+                                    session.delete_requested = true;
+                                    session.is_shutting_down = true;
+                                    let _ = session.command_tx.send(CoreCommand::StopAll);
+                                }
+                            });
+                            
+                            ui.separator();
+                            
+                            egui::ScrollArea::vertical().id_salt(id).max_height(100.0).show(ui, |ui| {
+                                for row in &session.peers {
+                                    ui.horizontal(|ui| {
+                                        ui.monospace(row.addr.to_string());
+                                        ui.label(Self::status_label(&row.state));
+                                        if let Some(tel) = &row.telemetry {
+                                            ui.label(format!("| In-flight: {}", tel.in_flight_requests));
+                                            ui.label(format!("| Drops: {}", tel.unexpected_blocks + tel.duplicate_blocks));
+                                        }
+                                    });
                                 }
                             });
                         }
-
-                        ui.separator();
-                    }
-                });
-
-            ui.separator();
-            ui.heading("Logs");
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for line in self.logs.iter().rev().take(20) {
-                    ui.label(line);
+                    });
+                    ui.add_space(8.0);
                 }
             });
         });
@@ -662,5 +624,3 @@ impl eframe::App for TorTorApp {
         ctx.request_repaint();
     }
 }
-
-

@@ -1,6 +1,6 @@
 [package]
 name = "tortor"
-version = "1.0.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["Vitaliy Golik <GLK Dev>"]
 description = "High-performance BitTorrent client with dynamic SIMD dispatch and zero-copy I/O"
@@ -10,7 +10,7 @@ keywords = ["bittorrent", "p2p", "simd", "io_uring", "networking"]
 categories = ["network-programming", "command-line-utilities"]
 
 [features]
-default = []
+default = ["gui"]
 gpu = []
 gui = ["dep:eframe"]
 
@@ -32,6 +32,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -46,3 +47,8 @@ opt-level = 3
 codegen-units = 1
 
 
+
+
+
+[build-dependencies]
+winres = "0.1"

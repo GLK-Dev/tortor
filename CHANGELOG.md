@@ -1,4 +1,18 @@
-﻿# Changelog - TorTor
+# Changelog - TorTor
+
+## [1.2.0] - 2026-07-14
+
+### Features & UI
+- **ASCII UI Design:** Redesigned the download dashboard with text-based ASCII progress bars (`[██████████░░] 80%`) and emojis for a classic hacker aesthetic.
+- **Neon Theme:** Upgraded the application color palette to feature neon blue and bright teal on a dark background.
+- **App Icon Integration:** Successfully embedded a custom "Digital Vortex" logo into `tortor.exe` (Windows) and the eframe title bar.
+
+## [1.1.0] - 2026-07-14
+
+### Features
+- **Multi-Torrent Manager:** Redesigned the GUI to support downloading and managing multiple torrents simultaneously. 
+- **Interactive Progress Bars:** Added clickable, accordion-style progress bars displaying detailed statistics, peers, and individual controls (Start/Cancel/Delete) for each torrent.
+- **Independent Sessions:** Each torrent operates in an isolated session state within the same application window.
 
 ## [1.0.0] - 2026-07-14
 
