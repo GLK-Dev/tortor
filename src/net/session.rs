@@ -55,6 +55,9 @@ pub async fn run_download_session(
         .context("timeout while sending Interested")??;
     state.am_interested = true;
 
+    // Seeding: optimistically unchoke the peer so they can request pieces from us
+    let _ = timeout(IO_TIMEOUT, PeerMessage::send_unchoke(stream)).await;
+
     let (bitfield_tx, bitfield_rx) = oneshot::channel();
     if coord_sender
         .send(CoordinatorMsg::GetCompletedPieces(bitfield_tx))
@@ -351,3 +354,4 @@ fn build_bitfield(total_pieces: u32, completed_pieces: &[u32]) -> Vec<u8> {
 
     bitfield
 }
+

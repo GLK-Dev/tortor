@@ -31,6 +31,7 @@ rfd = "0.14"
 sha1 = "0.10"
 sha2 = "0.10"
 hex = "0.4"
+rand = "0.8"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -43,4 +44,5 @@ harness = false
 lto = true
 opt-level = 3
 codegen-units = 1
+
 

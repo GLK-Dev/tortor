@@ -3313,13 +3313,14 @@ dependencies = [
 
 [[package]]
 name = "tortor"
-version = "0.1.0-alpha.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
  "criterion",
  "eframe",
  "hex",
+ "rand",
  "reqwest",
  "rfd",
  "serde",

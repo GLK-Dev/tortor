@@ -120,6 +120,18 @@ impl PeerMessage {
         }
     }
 
+    pub async fn send_choke(stream: &mut TcpStream) -> Result<()> {
+        let msg = [0u8, 0, 0, 1, 0];
+        stream.write_all(&msg).await.context("failed to send Choke")?;
+        Ok(())
+    }
+
+    pub async fn send_unchoke(stream: &mut TcpStream) -> Result<()> {
+        let msg = [0u8, 0, 0, 1, 1];
+        stream.write_all(&msg).await.context("failed to send Unchoke")?;
+        Ok(())
+    }
+
     pub async fn send_interested(stream: &mut TcpStream) -> Result<()> {
         let msg = [0u8, 0, 0, 1, 2];
         stream
@@ -224,3 +236,4 @@ async fn drain_payload(stream: &mut TcpStream, payload_len: usize) -> Result<()>
         .context("failed to drain payload")?;
     Ok(())
 }
+
