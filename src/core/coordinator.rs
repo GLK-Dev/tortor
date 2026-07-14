@@ -25,6 +25,8 @@ pub enum CoordinatorMsg {
     RequestMetadataWork(oneshot::Sender<Option<u32>>),
     MetadataPieceDownloaded(u32, Vec<u8>),
     MetadataPieceFailed(u32),
+    Pause,
+    Resume,
 }
 
 pub enum CoordinatorState {
@@ -36,6 +38,7 @@ pub enum CoordinatorState {
     DownloadingData {
         manager: TorrentManager,
         disk_writer: Box<dyn AsyncDiskIO>,
+        paused: bool,
     }
 }
 
@@ -64,15 +67,19 @@ pub async fn run_coordinator(
 
         match msg {
             CoordinatorMsg::RequestWork(reply) => {
-                if let CoordinatorState::DownloadingData { manager, .. } = &mut state {
-                    let work = manager.get_next_work();
-                    let _ = reply.send(work);
+                if let CoordinatorState::DownloadingData { manager, paused, .. } = &mut state {
+                    if *paused {
+                        let _ = reply.send(None);
+                    } else {
+                        let work = manager.get_next_work();
+                        let _ = reply.send(work);
+                    }
                 } else {
                     let _ = reply.send(None);
                 }
             }
             CoordinatorMsg::PieceDownloaded(index, data) => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer } = &mut state {
+                if let CoordinatorState::DownloadingData { manager, disk_writer, .. } = &mut state {
                     if let Err(err) = disk_writer.write_piece(index, data).await {
                         error!("disk write failed for piece {}: {}", index, err);
                         manager.return_work(index);
@@ -108,7 +115,7 @@ pub async fn run_coordinator(
                 }
             }
             CoordinatorMsg::ReadPiece { index, begin, length, reply } => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer } = &mut state {
+                if let CoordinatorState::DownloadingData { manager, disk_writer, paused: _ } = &mut state {
                     let should_serve = matches!(manager.piece_state(index), Some(crate::core::manager::PieceState::Downloaded));
 
                     let data = if should_serve {
@@ -182,7 +189,7 @@ pub async fn run_coordinator(
 
                     match disk_writer_res {
                         Ok(disk_writer) => {
-                            state = CoordinatorState::DownloadingData { manager, disk_writer };
+                            state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false };
                         }
                         Err(err) => {
                             error!("Failed to initialize disk for downloaded metadata: {}", err);
@@ -192,6 +199,18 @@ pub async fn run_coordinator(
             }
             CoordinatorMsg::MetadataPieceFailed(_index) => {
                 // Next tick will just request it again
+            }
+            CoordinatorMsg::Pause => {
+                if let CoordinatorState::DownloadingData { paused, .. } = &mut state {
+                    *paused = true;
+                    let _ = ui_sender.send(CoreMessage::Status("Paused".to_string())).await;
+                }
+            }
+            CoordinatorMsg::Resume => {
+                if let CoordinatorState::DownloadingData { paused, .. } = &mut state {
+                    *paused = false;
+                    let _ = ui_sender.send(CoreMessage::Status("Resumed".to_string())).await;
+                }
             }
         }
     }

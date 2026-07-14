@@ -11,3 +11,4 @@ pub mod manager;
 pub mod peer_id;
 pub mod resume;
 pub mod torrent;
+pub mod session_store;

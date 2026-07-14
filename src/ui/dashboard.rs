@@ -12,6 +12,7 @@ use tokio::time::{sleep, Duration};
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::coordinator::{self, CoordinatorMsg};
+use crate::core::session_store::TorrentSource;
 use crate::core::disk::StandardDisk;
 #[cfg(target_os = "linux")]
 use crate::core::disk_uring::UringDisk;
@@ -42,8 +43,8 @@ fn ascii_progress_bar(progress: f32, width: usize) -> String {
     let p = progress.clamp(0.0, 1.0);
     let filled = (p * width as f32).round() as usize;
     let empty = width.saturating_sub(filled);
-    let filled_str = "#".repeat(filled);
-    let empty_str = "-".repeat(empty);
+    let filled_str = "█".repeat(filled);
+    let empty_str = "░".repeat(empty);
     format!("[{}{}] {}%", filled_str, empty_str, (p * 100.0) as u32)
 }
 
@@ -68,8 +69,16 @@ pub fn run_dashboard(initial_torrent_path: Option<PathBuf>, listen_port: u16, ou
         native_options,
         Box::new(move |_| {
             let mut app = TorTorApp::new(listen_port);
+            
+            // Resume saved sessions
+            let entries = app.session_store.entries.clone();
+            for entry in entries {
+                app.start_core(entry.source, entry.output_dir);
+            }
+            
+            // Start CLI-provided torrent if any
             if let Some(path) = initial_torrent_path {
-                app.start_core(path, output_dir);
+                app.start_core(crate::core::session_store::TorrentSource::File(path), output_dir);
             }
             Ok(Box::new(app))
         }),
@@ -83,15 +92,38 @@ fn background_task(
     session_id: usize,
     tx: mpsc::Sender<(usize, CoreMessage)>,
     command_rx: Receiver<CoreCommand>,
-    torrent_path: PathBuf,
+    torrent_source: TorrentSource,
     listen_port: u16,
     output_dir: PathBuf,
 ) -> Result<()> {
-    let meta = match bencode::parse_torrent_file(&torrent_path) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = tx.send((session_id, CoreMessage::Error(format!("Failed to parse torrent: {e}"))));
-            return Err(e.into());
+    let meta = match &torrent_source {
+        TorrentSource::File(path) => match bencode::parse_torrent_file(path) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = tx.send((session_id, CoreMessage::Error(format!("Failed to parse torrent: {e}"))));
+                return Err(e.into());
+            }
+        },
+        TorrentSource::Magnet(uri) => {
+            // Very basic Magnet URI parse for now (we just need info_hash)
+            let mut info_hash = [0u8; 20];
+            if let Some(hash_str) = uri.split("urn:btih:").nth(1).map(|s| s.split('&').next().unwrap_or(s)) {
+                if hash_str.len() == 40 {
+                    if let Ok(bytes) = hex::decode(hash_str) {
+                        info_hash.copy_from_slice(&bytes);
+                    }
+                }
+            }
+            TorrentMeta {
+                info_hash,
+                name: "Magnet Download".to_string(),
+                piece_length: 256 * 1024,
+                pieces_count: 0,
+                total_length: None,
+                announce: "".to_string(),
+                pieces: vec![],
+                files: None,
+            }
         }
     };
     tx.send((session_id, CoreMessage::TorrentLoaded(meta.clone()))).ok();
@@ -179,9 +211,23 @@ fn background_task(
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
     
-    let resume_path = torrent_path.with_extension("fastresume");
+    let resume_path = match &torrent_source {
+        TorrentSource::File(path) => path.with_extension("fastresume"),
+        TorrentSource::Magnet(_) => output_dir.join(format!("{}.fastresume", hex::encode(meta.info_hash))),
+    };
+
+    let target_path = output_dir.join(&meta.name);
+    let mut is_valid = target_path.exists();
+    if is_valid && target_path.is_file() {
+        if let Ok(metadata) = std::fs::metadata(&target_path) {
+            if metadata.len() == 0 {
+                is_valid = false;
+            }
+        }
+    }
+    
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
-        Ok(Some(state)) => {
+        Ok(Some(state)) if is_valid => {
             let mgr = state.clone().into_manager(meta.pieces_count);
             tx.send((session_id, CoreMessage::Status(format!(
                 "Fast resume loaded: {} completed pieces",
@@ -190,11 +236,17 @@ fn background_task(
             .ok();
             mgr
         }
+        Ok(Some(_)) => {
+             tracing::warn!("Файлы для торрента {} не найдены на диске! Остановка загрузки.", meta.name);
+             let mgr = TorrentManager::new(meta.pieces_count);
+             tx.send((session_id, CoreMessage::Status("[ERROR: Missing]".to_string()))).ok();
+             tx.send((session_id, CoreMessage::Error("Files missing".to_string()))).ok(); // signal error state
+             mgr
+        }
         Ok(None) => TorrentManager::new(meta.pieces_count),
         Err(err) => {
             tx.send((session_id, CoreMessage::Status(format!(
-                "Fast resume load failed, starting fresh: {}",
-                err
+                "Failed to load fast resume: {err}"
             ))))
             .ok();
             TorrentManager::new(meta.pieces_count)
@@ -226,7 +278,7 @@ fn background_task(
                 ).await {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
+                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false };
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
@@ -267,7 +319,7 @@ fn background_task(
                 ).await {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer };
+                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false };
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
@@ -295,6 +347,7 @@ fn background_task(
     let swarm_peer_id = peer_id;
 
     let shutdown_tx_for_swarm = shutdown_tx.clone();
+    let coord_tx_for_cmd = coord_tx.clone();
     runtime.spawn(async move {
         swarm::run_swarm_manager(
             available_peers,
@@ -315,14 +368,23 @@ fn background_task(
     });
 
     while let Ok(command) = command_rx.recv() {
-        if let CoreCommand::StopAll = command {
-            tx.send((session_id, CoreMessage::Status("Stop requested: shutting down workers".to_string()))).ok();
-            let _ = shutdown_tx.send(());
-            runtime.block_on(async {
-                sleep(Duration::from_millis(800)).await;
-            });
-            tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
-            break;
+        match command {
+            CoreCommand::StopAll => {
+                tx.send((session_id, CoreMessage::Status("Stop requested: shutting down workers".to_string()))).ok();
+                let _ = shutdown_tx.send(());
+                runtime.block_on(async {
+                    sleep(Duration::from_millis(800)).await;
+                });
+                tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+                break;
+            }
+            CoreCommand::Pause => {
+                let _ = coord_tx_for_cmd.try_send(CoordinatorMsg::Pause);
+            }
+            CoreCommand::Resume => {
+                let _ = coord_tx_for_cmd.try_send(CoordinatorMsg::Resume);
+            }
+            _ => {}
         }
     }
 
@@ -332,7 +394,7 @@ fn background_task(
 struct TorrentSessionState {
     id: usize,
     output_dir: PathBuf,
-    selected_torrent: PathBuf,
+    source: TorrentSource,
     command_tx: Sender<CoreCommand>,
     peers: Vec<PeerRow>,
     logs: Vec<String>,
@@ -342,32 +404,43 @@ struct TorrentSessionState {
     is_shutting_down: bool,
     delete_requested: bool,
     swarm_started: bool,
+    is_paused: bool,
     expanded: bool,
+    has_error: bool,
+    remove_requested: bool,
 }
 
 struct TorTorApp {
     show_about: bool,
+    show_link_input: bool,
+    link_input_buffer: String,
     tx: Sender<(usize, CoreMessage)>,
     rx: Receiver<(usize, CoreMessage)>,
     sessions: HashMap<usize, TorrentSessionState>,
     next_id: usize,
     listen_port: u16,
+    session_store: crate::core::session_store::SessionStore,
 }
 
 impl TorTorApp {
     fn new(listen_port: u16) -> Self {
         let (tx, rx) = mpsc::channel();
+        let session_store = crate::core::session_store::SessionStore::load(&std::path::PathBuf::from("session.json")).unwrap_or_default();
+        
         Self {
             show_about: false,
+            show_link_input: false,
+            link_input_buffer: String::new(),
             tx,
             rx,
             sessions: HashMap::new(),
             next_id: 1,
             listen_port,
+            session_store,
         }
     }
 
-    fn start_core(&mut self, torrent_path: PathBuf, output_dir: PathBuf) {
+    fn start_core(&mut self, torrent_source: TorrentSource, output_dir: PathBuf) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
         let id = self.next_id;
         self.next_id += 1;
@@ -375,17 +448,20 @@ impl TorTorApp {
         let session = TorrentSessionState {
             id,
             output_dir: output_dir.clone(),
-            selected_torrent: torrent_path.clone(),
+            source: torrent_source.clone(),
             command_tx: cmd_tx,
             peers: Vec::new(),
-            logs: vec![format!("Loading torrent: {}", torrent_path.display())],
+            logs: vec![format!("Loading torrent: {:?}", torrent_source)],
             meta: None,
             global_progress: 0.0,
-            status: format!("Starting core for {}", torrent_path.display()),
+            status: format!("Starting core for {:?}", torrent_source),
             is_shutting_down: false,
             delete_requested: false,
             swarm_started: false,
+            is_paused: false,
             expanded: true,
+            has_error: false,
+            remove_requested: false,
         };
 
         self.sessions.insert(id, session);
@@ -394,7 +470,7 @@ impl TorTorApp {
         let listen_port = self.listen_port;
 
         std::thread::spawn(move || {
-            if let Err(err) = background_task(id, tx.clone(), cmd_rx, torrent_path, listen_port, output_dir) {
+            if let Err(err) = background_task(id, tx.clone(), cmd_rx, torrent_source, listen_port, output_dir) {
                 let _ = tx.send((id, CoreMessage::Error(err.to_string())));
             }
         });
@@ -472,6 +548,7 @@ impl TorTorApp {
                 }
                 CoreMessage::Error(err) => {
                     session.logs.push(format!("Error: {err}"));
+                    session.has_error = true;
                 }
             }
         }
@@ -504,7 +581,7 @@ impl eframe::App for TorTorApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
-                    ui.label(RichText::new("Version 1.5.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.label(RichText::new("Version 1.6.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
                     ui.add_space(10.0);
                     ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
                     ui.add_space(15.0);
@@ -541,7 +618,7 @@ impl eframe::App for TorTorApp {
             });
         });
 
-        // Close all if app is closed
+        // Graceful shutdown on window close
         if ctx.input(|i| i.viewport().close_requested()) {
             let mut all_shutting_down = true;
             for session in self.sessions.values_mut() {
@@ -559,14 +636,21 @@ impl eframe::App for TorTorApp {
         let completed_shutdowns = self.pump_messages();
         for id in completed_shutdowns {
             if let Some(session) = self.sessions.remove(&id) {
+                if session.remove_requested || session.delete_requested {
+                    self.session_store.entries.retain(|e| e.source != session.source);
+                    let _ = self.session_store.save(&std::path::PathBuf::from("session.json"));
+                }
+                
                 if session.delete_requested {
                     if let Some(meta) = &session.meta {
                         let target_path = session.output_dir.join(&meta.name);
                         let _ = std::fs::remove_dir_all(&target_path);
                         let _ = std::fs::remove_file(&target_path);
                     }
-                    let _ = std::fs::remove_file(session.selected_torrent.with_extension("fastresume"));
-                    let _ = std::fs::remove_file(session.selected_torrent.with_extension("download.part"));
+                    if let crate::core::session_store::TorrentSource::File(path) = &session.source {
+                        let _ = std::fs::remove_file(path.with_extension("fastresume"));
+                        let _ = std::fs::remove_file(path.with_extension("download.part"));
+                    }
                 }
             }
         }
@@ -579,7 +663,7 @@ impl eframe::App for TorTorApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("TorTor Download Manager");
-                if ui.button("+ Add Torrent").clicked() {
+                if ui.button(egui::RichText::new("[ Добавить файл ]").family(egui::FontFamily::Monospace)).clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Torrent Files", &["torrent"])
                         .pick_file()
@@ -588,11 +672,48 @@ impl eframe::App for TorTorApp {
                             .set_title("Select Download Directory")
                             .pick_folder()
                         {
-                            self.start_core(path, dir);
+                            let source = crate::core::session_store::TorrentSource::File(path);
+                            self.session_store.entries.push(crate::core::session_store::SessionEntry {
+                                source: source.clone(),
+                                output_dir: dir.clone(),
+                                is_paused: false,
+                            });
+                            let _ = self.session_store.save(&std::path::PathBuf::from("session.json"));
+                            self.start_core(source, dir);
                         }
                     }
                 }
+                
+                if ui.button(egui::RichText::new("[ Добавить ссылку ]").family(egui::FontFamily::Monospace)).clicked() {
+                    self.show_link_input = !self.show_link_input;
+                }
             });
+
+            if self.show_link_input {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("> URL/Magnet:").family(egui::FontFamily::Monospace).color(egui::Color32::GREEN));
+                    ui.text_edit_singleline(&mut self.link_input_buffer);
+                    
+                    if ui.button(egui::RichText::new("[ OK ]").family(egui::FontFamily::Monospace)).clicked() {
+                        if let Some(dir) = rfd::FileDialog::new()
+                            .set_title("Select Download Directory")
+                            .pick_folder()
+                        {
+                            let source = crate::core::session_store::TorrentSource::Magnet(self.link_input_buffer.clone());
+                            self.session_store.entries.push(crate::core::session_store::SessionEntry {
+                                source: source.clone(),
+                                output_dir: dir.clone(),
+                                is_paused: false,
+                            });
+                            let _ = self.session_store.save(&std::path::PathBuf::from("session.json"));
+                            self.start_core(source, dir);
+                            
+                            self.link_input_buffer.clear();
+                            self.show_link_input = false;
+                        }
+                    }
+                });
+            }
             ui.separator();
 
             if self.sessions.is_empty() {
@@ -629,11 +750,19 @@ impl eframe::App for TorTorApp {
                             let icon = if session.expanded { "▼" } else { "▶" };
                             let ascii_bar = ascii_progress_bar(session.global_progress, 15);
                             let title = format!("{} {}  {}", icon, name, ascii_bar);
+                            
+                            let text_color = if session.has_error {
+                                Color32::from_rgb(255, 50, 80)
+                            } else if session.global_progress >= 1.0 {
+                                Color32::from_rgb(0, 255, 209)
+                            } else {
+                                Color32::from_rgb(0, 210, 255)
+                            };
 
                             // The clickable bar
                             let btn = ui.add_sized(
                                 [ui.available_width(), 35.0],
-                                egui::Button::new(RichText::new(title).size(18.0).monospace().color(if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(0, 210, 255) }))
+                                egui::Button::new(RichText::new(title).size(18.0).monospace().color(text_color))
                                     .fill(Color32::TRANSPARENT)
                             );
 
@@ -657,17 +786,33 @@ impl eframe::App for TorTorApp {
                             ui.add_space(8.0);
                             
                             ui.horizontal(|ui| {
-                                if ui.add_enabled(!session.swarm_started && !session.is_shutting_down, egui::Button::new("▶ Start Swarm")).clicked() {
+                                if ui.add_enabled(!session.swarm_started && !session.is_shutting_down && !session.has_error, egui::Button::new("▶ Start Swarm")).clicked() {
                                     session.swarm_started = true;
                                     let _ = session.command_tx.send(CoreCommand::StartSwarm);
                                 }
                                 
-                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("⏹ Cancel & Close")).clicked() {
+                                if session.swarm_started {
+                                    if !session.is_paused {
+                                        if ui.add_enabled(!session.is_shutting_down, egui::Button::new("⏸ Пауза")).clicked() {
+                                            session.is_paused = true;
+                                            let _ = session.command_tx.send(CoreCommand::Pause);
+                                        }
+                                    } else {
+                                        if ui.add_enabled(!session.is_shutting_down, egui::Button::new("▶ Возобновить")).clicked() {
+                                            session.is_paused = false;
+                                            let _ = session.command_tx.send(CoreCommand::Resume);
+                                        }
+                                    }
+                                }
+                                
+                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("❌ Remove")).clicked() {
+                                    session.remove_requested = true;
                                     session.is_shutting_down = true;
                                     let _ = session.command_tx.send(CoreCommand::StopAll);
                                 }
                                 
-                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("🗑 Delete Download Data")).clicked() {
+                                if ui.add_enabled(!session.is_shutting_down, egui::Button::new("🗑 Remove + Files")).clicked() {
+                                    session.remove_requested = true;
                                     session.delete_requested = true;
                                     session.is_shutting_down = true;
                                     let _ = session.command_tx.send(CoreCommand::StopAll);

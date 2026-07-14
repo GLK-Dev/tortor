@@ -7,6 +7,9 @@ pub enum CoreCommand {
     ProbePeer(SocketAddr),
     StartSwarm,
     StopAll,
+    Pause,
+    Resume,
+    Remove(bool),
 }
 
 #[derive(Debug, Clone, Default)]

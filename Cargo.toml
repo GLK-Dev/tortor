@@ -42,6 +42,7 @@ hex = "0.4"
 rand = "0.8"
 image = { version = "0.24", default-features = false, features = ["png"] }
 
+
 [dev-dependencies]
 criterion = "0.5"
 
