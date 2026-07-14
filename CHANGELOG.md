@@ -1,5 +1,12 @@
 # Changelog - TorTor
 
+## [1.5.0-alpha] - 2026-07-14
+
+### Features / Новые функции
+- **Peer Exchange (PEX - BEP 11):** Full inbound and outbound PEX implementation. The swarm manager dynamically computes connection deltas and broadcasts peer updates across the network, minimizing tracker dependency. (Полная поддержка входящего и исходящего PEX. Менеджер роя динамически вычисляет дельты соединений и рассылает обновления пиров по сети, минимизируя зависимость от трекера).
+- **SessionEvent Channel Refactor:** Migrated internal inter-actor messaging to a unified, strongly-typed SessionEvent bus for seamless global broadcasts. (Миграция внутреннего общения акторов на единую строго-типизированную шину SessionEvent для бесшовных глобальных рассылок).
+
+
 ## [1.4.0] - 2026-07-14
 
 ### Core Architecture / Архитектура

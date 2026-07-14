@@ -44,7 +44,7 @@ cargo run --release
 | Choke/Unchoke Policy & Handshake Layer | Done | v1.3.0 |
 | io_uring disk pipeline (Linux) | Done | v1.3.0 |
 | Magnet Links & BEP 9/10 Extension Protocol | Done | v1.4.0 |
-| Peer Exchange (PEX - BEP 11) | Planned | v1.5.0 |
+| Peer Exchange (PEX - BEP 11) | Done | v1.5.0 |
 | Kademlia DHT (BEP 5) | Planned | v2.0.0 |
 | QUIC/WebTransport transport experiments | Planned | v2.0.0 |
 
@@ -89,7 +89,7 @@ cargo run --release
 | Choke/Unchoke Политика и State Machine | Готово | v1.3.0 |
 | Дисковый конвейер io_uring (Linux) | Готово | v1.3.0 |
 | Magnet-ссылки и BEP 9/10 протокол расширений | Готово | v1.4.0 |
-| Peer Exchange (PEX - BEP 11) | В планах | v1.5.0 |
+| Peer Exchange (PEX - BEP 11) | Готово | v1.5.0 |
 | Kademlia DHT (BEP 5) | В планах | v2.0.0 |
 | Эксперименты с QUIC/WebTransport | В планах | v2.0.0 |
 
