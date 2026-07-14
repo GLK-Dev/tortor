@@ -504,7 +504,7 @@ impl eframe::App for TorTorApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
-                    ui.label(RichText::new("Version 1.2.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.label(RichText::new("Version 1.5.0").size(14.0).color(Color32::from_rgb(0, 255, 209)));
                     ui.add_space(10.0);
                     ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
                     ui.add_space(15.0);
@@ -518,6 +518,7 @@ impl eframe::App for TorTorApp {
                         "📂 Multi-file torrent & Session isolation",
                         "🛡️ Memory-safe piece assembler",
                         "🔄 Zero-copy I/O with Tokio",
+                        "🌐 Kademlia DHT & PEX Support",
                     ];
                     for f in features {
                         ui.label(RichText::new(f).color(Color32::from_rgb(200, 220, 255)));
