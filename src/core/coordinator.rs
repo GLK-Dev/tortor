@@ -39,6 +39,7 @@ pub enum CoordinatorState {
         manager: TorrentManager,
         disk_writer: Box<dyn AsyncDiskIO>,
         paused: bool,
+        has_completed: bool,
     }
 }
 
@@ -79,7 +80,7 @@ pub async fn run_coordinator(
                 }
             }
             CoordinatorMsg::PieceDownloaded(index, data) => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer, .. } = &mut state {
+                if let CoordinatorState::DownloadingData { manager, disk_writer, has_completed, .. } = &mut state {
                     if let Err(err) = disk_writer.write_piece(index, data).await {
                         error!("disk write failed for piece {}: {}", index, err);
                         manager.return_work(index);
@@ -96,9 +97,11 @@ pub async fn run_coordinator(
                     }
 
                     if manager.is_done() {
-                        info!("torrent download complete");
-                        let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
-                        break;
+                        if !*has_completed {
+                            info!("torrent download complete, entering seeding mode");
+                            let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                            *has_completed = true;
+                        }
                     }
                 }
             }
@@ -115,7 +118,7 @@ pub async fn run_coordinator(
                 }
             }
             CoordinatorMsg::ReadPiece { index, begin, length, reply } => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer, paused: _ } = &mut state {
+                if let CoordinatorState::DownloadingData { manager, disk_writer, paused: _, .. } = &mut state {
                     let should_serve = matches!(manager.piece_state(index), Some(crate::core::manager::PieceState::Downloaded));
 
                     let data = if should_serve {
@@ -189,7 +192,7 @@ pub async fn run_coordinator(
 
                     match disk_writer_res {
                         Ok(disk_writer) => {
-                            state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false };
+                            state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
                         }
                         Err(err) => {
                             error!("Failed to initialize disk for downloaded metadata: {}", err);

@@ -217,7 +217,7 @@ fn background_task(
     };
 
     let target_path = output_dir.join(&meta.name);
-    let mut is_valid = target_path.exists();
+    let mut is_valid = target_path.exists() || matches!(torrent_source, TorrentSource::Magnet(_));
     if is_valid && target_path.is_file() {
         if let Ok(metadata) = std::fs::metadata(&target_path) {
             if metadata.len() == 0 {
@@ -238,9 +238,11 @@ fn background_task(
         }
         Ok(Some(_)) => {
              tracing::warn!("Файлы для торрента {} не найдены на диске! Остановка загрузки.", meta.name);
-             let mgr = TorrentManager::new(meta.pieces_count);
+             let mut mgr = TorrentManager::new(meta.pieces_count);
              tx.send((session_id, CoreMessage::Status("[ERROR: Missing]".to_string()))).ok();
-             tx.send((session_id, CoreMessage::Error("Files missing".to_string()))).ok(); // signal error state
+             tx.send((session_id, CoreMessage::Error("Files missing. Torrent paused.".to_string()))).ok(); // signal error state
+             // Pause the core right away to prevent re-downloading from scratch
+             tx.send((session_id, CoreMessage::Status("Paused".to_string()))).ok();
              mgr
         }
         Ok(None) => TorrentManager::new(meta.pieces_count),
@@ -278,7 +280,13 @@ fn background_task(
                 ).await {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false };
+                        let mut state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
+                        // If it's paused due to error, set state.paused = true
+                        if !is_valid {
+                            if let coordinator::CoordinatorState::DownloadingData { ref mut paused, .. } = state {
+                                *paused = true;
+                            }
+                        }
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
@@ -607,7 +615,7 @@ impl eframe::App for TorTorApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
-                    ui.label(RichText::new("Version 1.6.2").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.label(RichText::new("Version 1.6.3").size(14.0).color(Color32::from_rgb(0, 255, 209)));
                     ui.add_space(10.0);
                     ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
                     ui.add_space(15.0);

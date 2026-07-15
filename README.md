@@ -39,15 +39,56 @@ cargo run --release
 | --- | --- | --- |
 | Basic TCP listener and protocol scaffolding | Done | v1.0.0 |
 | Dynamic SIMD hashing (AVX2 / SSE4.1) | Done | v1.0.0 |
+# 🌀 TorTor
+
+![TorTor Logo](Images/tortor_icon.png)
+
+*English documentation below | [Русская документация ниже](#русский)*
+
+---
+
+## English
+
+TorTor is a next-generation, high-performance BitTorrent client written in Rust. It combines memory safety with low-level speed through dynamic CPU dispatch and a modular architecture designed for zero-copy I/O evolution.
+
+### Key Features
+- **⚡ Dynamic SIMD Dispatch:** Runtime CPU detection for AVX2 and SSE4.1 with a portable fallback path.
+- **🛡️ Memory-Safe Core:** Piece verification and protocol logic written in safe Rust by default.
+- **📂 Multi-Torrent Manager:** Download and manage multiple torrents simultaneously in a unified session-isolated interface.
+- **💻 Hacker-Style ASCII UI:** A gorgeous, cyberpunk-inspired \ gui\ dashboard featuring clickable ASCII progress bars (\[██████░░]\) and a deep neon-blue color palette.
+- **🚀 Zero-copy I/O:** Built on top of Tokio for blazing-fast asynchronous data handling.
+
+### Installation and Build
+Ensure you have the latest stable Rust toolchain installed.
+
+\\\ ash
+git clone https://github.com/GLK-Dev/tortor.git
+cd tortor
+\\\
+
+**Auto-compiler (Windows):**
+Simply run \ uild.bat\ and select \1\ for a fast Beta build or \2\ for a highly-optimized Release build.
+
+**Manual Build:**
+\\\ ash
+cargo build --release
+cargo run --release
+\\\
+
+### Roadmap
+| Feature | Status | Target |
+| --- | --- | --- |
+| Basic TCP listener and protocol scaffolding | Done | v1.0.0 |
+| Dynamic SIMD hashing (AVX2 / SSE4.1) | Done | v1.0.0 |
 | Multi-Torrent Download Manager | Done | v1.1.0 |
 | ASCII UI, Neon Theme, & App Icon | Done | v1.4.0 |
 | Choke/Unchoke Policy & Handshake Layer | Done | v1.3.0 |
 | io_uring disk pipeline (Linux) | Done | v1.3.0 |
 | Magnet Links & BEP 9/10 Extension Protocol | Done | v1.4.0 |
 | Peer Exchange (PEX - BEP 11) | Done | v1.5.0 |
-| Kademlia DHT (BEP 5) & Fast Resume | Done | v1.6.2 |
-| QUIC/TLS 1.3 Transport (Optimistic Dialing) | Done | v1.6.2 |
-| Global Traffic Shaper (Token Bucket) | Done | v1.6.2 |
+| Kademlia DHT (BEP 5) & Fast Resume | Done | v1.6.3 |
+| QUIC/TLS 1.3 Transport (Optimistic Dialing) | Done | v1.6.3 |
+| Global Traffic Shaper (Token Bucket) | Done | v1.6.3 |
 
 ---
 
@@ -60,22 +101,22 @@ TorTor — это высокопроизводительный BitTorrent-кли
 - **⚡ Динамический SIMD-диспетчер:** Обнаружение возможностей процессора на лету (AVX2 и SSE4.1) с безопасным резервным вариантом.
 - **🛡️ Безопасное ядро:** Верификация кусков файлов (pieces) и логика протокола написаны на безопасном Rust.
 - **📂 Мульти-торрент менеджер:** Скачивайте и управляйте сразу несколькими торрентами одновременно в изолированных сессиях.
-- **💻 Хакерский ASCII Интерфейс:** Потрясающий дашборд на базе \gui\ с кликабельными ASCII-прогресс-барами (\[██████░░]\) в неоновой киберпанк стилистике.
+- **💻 Хакерский ASCII Интерфейс:** Потрясающий дашборд на базе \ gui\ с кликабельными ASCII-прогресс-барами (\[██████░░]\) в неоновой киберпанк стилистике.
 - **🚀 I/O без копирования:** Создано на базе Tokio для молниеносной асинхронной обработки данных.
 
 ### Установка и Сборка
 Убедитесь, что у вас установлена последняя стабильная версия Rust.
 
-\\\ash
+\\\ ash
 git clone https://github.com/GLK-Dev/tortor.git
 cd tortor
 \\\
 
 **Автоматический компилятор (Windows):**
-Просто запустите файл \uild.bat\ и выберите \1\ для быстрой отладочной сборки или \2\ для максимально оптимизированной релизной сборки.
+Просто запустите файл \ uild.bat\ и выберите \1\ для быстрой отладочной сборки или \2\ для максимально оптимизированной релизной сборки.
 
 **Ручная сборка:**
-\\\ash
+\\\ ash
 cargo build --release
 cargo run --release
 \\\
@@ -91,9 +132,9 @@ cargo run --release
 | Дисковый конвейер io_uring (Linux) | Готово | v1.3.0 |
 | Magnet-ссылки и BEP 9/10 протокол расширений | Готово | v1.4.0 |
 | Peer Exchange (PEX - BEP 11) | Готово | v1.5.0 |
-| Kademlia DHT (BEP 5) и Fast Resume | Готово | v1.6.2 |
-| Скрытый транспорт QUIC/TLS 1.3 | Готово | v1.6.2 |
-| Глобальный Traffic Shaper (Token Bucket) | Готово | v1.6.2 |
+| Kademlia DHT (BEP 5) и Fast Resume | Готово | v1.6.3 |
+| Скрытый транспорт QUIC/TLS 1.3 | Готово | v1.6.3 |
+| Глобальный Traffic Shaper (Token Bucket) | Готово | v1.6.3 |
 
 ---
 **Автор:** Создано и поддерживается  ([mjojo](https://github.com/mjojo)) под эгидой [GLK Dev](https://github.com/GLK-Dev).  
