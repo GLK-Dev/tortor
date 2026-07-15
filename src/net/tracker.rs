@@ -30,17 +30,23 @@ pub async fn announce(
     peer_id: &[u8; 20],
     port: u16,
     left: u64,
+    event: Option<&str>,
 ) -> Result<Vec<PeerInfo>> {
     if tracker_url.starts_with("udp://") {
-        return announce_udp(tracker_url, info_hash, peer_id, port, left).await;
+        return announce_udp(tracker_url, info_hash, peer_id, port, left, event).await;
     }
 
     let info_hash_encoded: String = byte_serialize(info_hash).collect();
     let peer_id_encoded: String = byte_serialize(peer_id).collect();
 
     let separator = if tracker_url.contains('?') { '&' } else { '?' };
+    let event_param = match event {
+        Some(e) => format!("&event={}", e),
+        None => "".to_string(),
+    };
+    
     let request_url = format!(
-        "{tracker_url}{separator}info_hash={info_hash_encoded}&peer_id={peer_id_encoded}&port={port}&uploaded=0&downloaded=0&left={left}&compact=1&event=started"
+        "{tracker_url}{separator}info_hash={info_hash_encoded}&peer_id={peer_id_encoded}&port={port}&uploaded=0&downloaded=0&left={left}&compact=1{event_param}"
     );
 
     debug!("Sending tracker announce: {request_url}");
@@ -98,6 +104,7 @@ async fn announce_udp(
     peer_id: &[u8; 20],
     port: u16,
     left: u64,
+    event: Option<&str>,
 ) -> Result<Vec<PeerInfo>> {
     debug!("Sending UDP tracker announce: {}", tracker_url);
 
@@ -156,7 +163,15 @@ async fn announce_udp(
     announce_req.extend_from_slice(&0u64.to_be_bytes()); // downloaded
     announce_req.extend_from_slice(&left.to_be_bytes()); // left
     announce_req.extend_from_slice(&0u64.to_be_bytes()); // uploaded
-    announce_req.extend_from_slice(&2u32.to_be_bytes()); // event = 2 (started)
+    
+    let event_num = match event {
+        Some("completed") => 1u32,
+        Some("started") => 2u32,
+        Some("stopped") => 3u32,
+        _ => 0u32,
+    };
+    announce_req.extend_from_slice(&event_num.to_be_bytes()); // event
+    
     announce_req.extend_from_slice(&0u32.to_be_bytes()); // IP
     announce_req.extend_from_slice(&rand::random::<u32>().to_be_bytes()); // key
     announce_req.extend_from_slice(&(-1i32).to_be_bytes()); // num_want

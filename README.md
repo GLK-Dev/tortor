@@ -45,9 +45,9 @@ cargo run --release
 | io_uring disk pipeline (Linux) | Done | v1.3.0 |
 | Magnet Links & BEP 9/10 Extension Protocol | Done | v1.4.0 |
 | Peer Exchange (PEX - BEP 11) | Done | v1.5.0 |
-| Kademlia DHT (BEP 5) & Fast Resume | Done | v1.6.1 |
-| QUIC/TLS 1.3 Transport (Optimistic Dialing) | Done | v1.6.1 |
-| Global Traffic Shaper (Token Bucket) | Done | v1.6.1 |
+| Kademlia DHT (BEP 5) & Fast Resume | Done | v1.6.2 |
+| QUIC/TLS 1.3 Transport (Optimistic Dialing) | Done | v1.6.2 |
+| Global Traffic Shaper (Token Bucket) | Done | v1.6.2 |
 
 ---
 
@@ -91,9 +91,9 @@ cargo run --release
 | Дисковый конвейер io_uring (Linux) | Готово | v1.3.0 |
 | Magnet-ссылки и BEP 9/10 протокол расширений | Готово | v1.4.0 |
 | Peer Exchange (PEX - BEP 11) | Готово | v1.5.0 |
-| Kademlia DHT (BEP 5) и Fast Resume | Готово | v1.6.1 |
-| Скрытый транспорт QUIC/TLS 1.3 | Готово | v1.6.1 |
-| Глобальный Traffic Shaper (Token Bucket) | Готово | v1.6.1 |
+| Kademlia DHT (BEP 5) и Fast Resume | Готово | v1.6.2 |
+| Скрытый транспорт QUIC/TLS 1.3 | Готово | v1.6.2 |
+| Глобальный Traffic Shaper (Token Bucket) | Готово | v1.6.2 |
 
 ---
 **Автор:** Создано и поддерживается  ([mjojo](https://github.com/mjojo)) под эгидой [GLK Dev](https://github.com/GLK-Dev).  

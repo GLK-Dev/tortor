@@ -44,4 +44,5 @@ pub enum CoreMessage {
 pub enum SessionEvent {
     PieceCompleted(u32),
     ActivePeersSnapshot(Vec<std::net::SocketAddr>),
+    DownloadComplete,
 }

@@ -177,7 +177,7 @@ fn background_task(
     let peer_id = generate_peer_id();
 
     let peers = runtime.block_on(async {
-        tracker::announce(&tracker_url, &meta.info_hash, &peer_id, listen_port, left).await
+        tracker::announce(&tracker_url, &meta.info_hash, &peer_id, listen_port, left, Some("started")).await
     })?;
 
     for peer in &peers {
@@ -517,8 +517,8 @@ impl TorTorApp {
                 }
                 CoreMessage::DownloadComplete => {
                     session.global_progress = 1.0;
-                    session.status = "Download complete".to_string();
-                    session.logs.push("All pieces were downloaded".to_string());
+                    session.status = "[SEEDING]".to_string();
+                    session.logs.push("All pieces were downloaded. Transitioning to Seeding mode.".to_string());
                 }
                 CoreMessage::ShutdownComplete => {
                     completed_shutdowns.push(id);
@@ -583,7 +583,7 @@ impl eframe::App for TorTorApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("🌀 TorTor").size(36.0).strong().color(Color32::from_rgb(0, 210, 255)));
-                    ui.label(RichText::new("Version 1.6.1").size(14.0).color(Color32::from_rgb(0, 255, 209)));
+                    ui.label(RichText::new("Version 1.6.2").size(14.0).color(Color32::from_rgb(0, 255, 209)));
                     ui.add_space(10.0);
                     ui.label(RichText::new("High-performance BitTorrent client").italics().color(Color32::LIGHT_GRAY));
                     ui.add_space(15.0);

@@ -94,11 +94,9 @@ async fn run_cli(args: Args) -> Result<()> {
 
     if args.announce_tracker {
         if meta.announce.starts_with("http://") || meta.announce.starts_with("https://") {
-            let left = meta
-                .total_length
-                .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+            let left = meta.total_length.unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
 
-            let peers = tracker::announce(&meta.announce, &meta.info_hash, &peer_id, port, left)
+            let peers = tracker::announce(&meta.announce, &meta.info_hash, &peer_id, port, left, Some("started"))
                 .await
                 .context("tracker announce failed")?;
 

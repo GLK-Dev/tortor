@@ -43,6 +43,7 @@ struct SwarmState {
     peer_id: [u8; 20],
     listen_port: u16,
     left_hint: u64,
+    event: Option<String>,
 }
 
 pub async fn run_swarm_manager(
@@ -64,6 +65,7 @@ pub async fn run_swarm_manager(
     let mut tick = interval(Duration::from_secs(SWARM_TICK_SECS));
     let mut pex_tick = interval(Duration::from_secs(60));
     let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut announce_rx = announce_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
     
     let (server_config, client_config) = crate::crypto::tls::configure_quic().expect("Failed to configure QUIC");
@@ -106,6 +108,7 @@ pub async fn run_swarm_manager(
         peer_id,
         listen_port,
         left_hint,
+        event: Some("started".to_string()),
     };
 
     let _ = ui_sender
@@ -134,6 +137,7 @@ pub async fn run_swarm_manager(
                         }
                         SwarmEvent::TrackerPeersReceived(addrs) => {
                             swarm_state.announce_in_progress = false;
+                            swarm_state.event = None; // clear event after successful announce
                             let mut added = 0usize;
 
                             for addr in addrs {
@@ -211,6 +215,18 @@ pub async fn run_swarm_manager(
                 let current_peers: Vec<SocketAddr> = active.keys().copied().collect();
                 if !current_peers.is_empty() {
                     let _ = announce_tx.send(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers));
+                }
+            }
+            Ok(event) = announce_rx.recv() => {
+                match event {
+                    crate::core::command::SessionEvent::ActivePeersSnapshot(_) => {} // Handled elsewhere or not needed here
+                    crate::core::command::SessionEvent::PieceCompleted(_) => {}
+                    crate::core::command::SessionEvent::DownloadComplete => {
+                        tracing::info!("Swarm received DownloadComplete. Forcing tracker announce with event=completed");
+                        swarm_state.event = Some("completed".to_string());
+                        swarm_state.left_hint = 0;
+                        start_reannounce(&mut swarm_state, event_tx.clone());
+                    }
                 }
             }
             _ = tick.tick() => {
@@ -324,6 +340,19 @@ pub async fn run_swarm_manager(
         peer.handle.abort();
     }
 
+    tracing::info!("Graceful shutdown: Sending event=stopped tracker announce...");
+    let event_str = Some("stopped");
+    let announce_future = tracker::announce(
+        &swarm_state.tracker_url,
+        &swarm_state.info_hash,
+        &swarm_state.peer_id,
+        swarm_state.listen_port,
+        swarm_state.left_hint,
+        event_str,
+    );
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), announce_future).await;
+    tracing::info!("Swarm network interfaces closed. Exit.");
+
     let _ = ui_sender
         .send(CoreMessage::Status("Swarm manager stopped".to_string()))
         .await;
@@ -353,9 +382,10 @@ fn start_reannounce(state: &mut SwarmState, event_tx: mpsc::UnboundedSender<Swar
     let peer_id = state.peer_id;
     let listen_port = state.listen_port;
     let left_hint = state.left_hint;
+    let event_str = state.event.clone();
 
     tokio::spawn(async move {
-        match tracker::announce(&tracker_url, &info_hash, &peer_id, listen_port, left_hint).await {
+        match tracker::announce(&tracker_url, &info_hash, &peer_id, listen_port, left_hint, event_str.as_deref()).await {
             Ok(peers) => {
                 let addrs = peers.into_iter().map(|p| p.addr).collect();
                 let _ = event_tx.send(SwarmEvent::TrackerPeersReceived(addrs));

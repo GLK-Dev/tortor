@@ -230,6 +230,9 @@ async fn download_piece(
                     Ok(crate::core::command::SessionEvent::PieceCompleted(piece_index)) => {
                         let _ = PeerMessage::send_have(shaped_stream, piece_index).await;
                     }
+                    Ok(crate::core::command::SessionEvent::DownloadComplete) => {
+                        // ignore here, handled by swarm manager
+                    }
                     Ok(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers)) => {
                         if let Some(remote_id) = state.remote_pex_id {
                             let current_set: HashSet<SocketAddr> = current_peers.into_iter().collect();
