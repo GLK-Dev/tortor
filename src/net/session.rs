@@ -19,6 +19,7 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TICK: Duration = Duration::from_millis(1500);
 const REQUEST_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
 const PIPELINE_DEPTH: usize = 5;
+const PIECE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
 struct PeerState {
@@ -213,6 +214,10 @@ async fn download_piece(
                     let _ = ui_sender
                         .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
                         .await;
+
+                    if session_start.elapsed() > PIECE_TIMEOUT {
+                        bail!("piece download took too long (> 120s), dropping peer to un-stall");
+                    }
                 } else {
                     break;
                 }
@@ -414,6 +419,9 @@ async fn download_piece(
                 let _ = ui_sender
                     .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
                     .await;
+                if session_start.elapsed() > PIECE_TIMEOUT {
+                    bail!("piece download took too long (> 120s), dropping peer to un-stall");
+                }
             }
         }
     }
