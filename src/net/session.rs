@@ -324,6 +324,7 @@ async fn download_piece(
                             if let Err(err) = PeerMessage::send_piece(shaped_stream, index, begin, &block).await {
                                 bail!("failed to send piece {}: {err}", index);
                             }
+                            let _ = ui_sender.send(CoreMessage::BytesTransferred(0, block.len())).await;
                         }
                     }
                 }
@@ -332,6 +333,7 @@ async fn download_piece(
                     begin,
                     block,
                 } => {
+                    let _ = ui_sender.send(CoreMessage::BytesTransferred(block.len(), 0)).await;
                     if index != assembler.piece_index {
                         telemetry.unexpected_blocks += 1;
                         let _ = ui_sender

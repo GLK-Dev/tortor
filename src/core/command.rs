@@ -37,6 +37,7 @@ pub enum CoreMessage {
     ProbeSucceeded(SocketAddr, String),
     ProbeFailed(SocketAddr, String),
     TelemetryUpdate(SocketAddr, SessionTelemetry),
+    BytesTransferred(usize, usize),
     Error(String),
 }
 

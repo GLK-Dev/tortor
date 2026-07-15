@@ -408,6 +408,11 @@ struct TorrentSessionState {
     expanded: bool,
     has_error: bool,
     remove_requested: bool,
+    accumulated_rx: usize,
+    accumulated_tx: usize,
+    download_speed: f64,
+    upload_speed: f64,
+    last_speed_update: std::time::Instant,
 }
 
 struct TorTorApp {
@@ -464,6 +469,11 @@ impl TorTorApp {
             expanded: true,
             has_error: false,
             remove_requested: false,
+            accumulated_rx: 0,
+            accumulated_tx: 0,
+            download_speed: 0.0,
+            upload_speed: 0.0,
+            last_speed_update: std::time::Instant::now(),
         };
 
         self.sessions.insert(id, session);
@@ -552,6 +562,20 @@ impl TorTorApp {
                     session.logs.push(format!("Error: {err}"));
                     session.has_error = true;
                 }
+                CoreMessage::BytesTransferred(rx_bytes, tx_bytes) => {
+                    session.accumulated_rx += rx_bytes;
+                    session.accumulated_tx += tx_bytes;
+                }
+            }
+
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(session.last_speed_update).as_secs_f64();
+            if elapsed >= 1.0 {
+                session.download_speed = (session.accumulated_rx as f64) / elapsed;
+                session.upload_speed = (session.accumulated_tx as f64) / elapsed;
+                session.accumulated_rx = 0;
+                session.accumulated_tx = 0;
+                session.last_speed_update = now;
             }
         }
 
@@ -777,7 +801,12 @@ impl eframe::App for TorTorApp {
                             let status_color = if session.global_progress >= 1.0 { Color32::from_rgb(0, 255, 209) } else { Color32::from_rgb(200, 220, 255) };
                             
                             ui.label(RichText::new(format!("📁 Path: {}", session.output_dir.display())).color(Color32::WHITE));
-                            ui.label(RichText::new(format!("🔗 Status: {}", session.status)).color(status_color));
+                            ui.label(RichText::new(format!("📌 Status: {}", session.status)).color(status_color));
+                            
+                            let dl_mbs = session.download_speed / 1_048_576.0;
+                            let ul_mbs = session.upload_speed / 1_048_576.0;
+                            ui.label(RichText::new(format!("⚡ Speed: DL {:.2} MB/s | UL {:.2} MB/s", dl_mbs, ul_mbs)).color(Color32::from_rgb(255, 200, 50)));
+
                             ui.label(RichText::new(format!("👥 Peers: {}", session.peers.len())).color(Color32::WHITE));
                             
                             if let Some(meta) = &session.meta {
