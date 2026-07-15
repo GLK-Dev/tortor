@@ -25,59 +25,65 @@ impl StandardDisk {
         files_meta: Option<&Vec<crate::core::torrent::TorrentFile>>,
         name: &str,
     ) -> Result<Self> {
-        let base_dir = base_dir.as_ref();
-        tokio::fs::create_dir_all(base_dir).await.context("failed to create base dir")?;
-
-        let mut mappings = Vec::new();
-        let mut current_offset = 0u64;
-
+        let base_dir = base_dir.as_ref().to_path_buf();
+        let name = name.to_string();
+        let is_multi = files_meta.is_some();
         let torrent_files = files_meta.cloned().unwrap_or_else(|| {
             vec![crate::core::torrent::TorrentFile {
                 length: total_size,
-                path: vec![name.to_string()],
+                path: vec![name.clone()],
             }]
         });
 
-        for tf in torrent_files {
-            let mut file_path = base_dir.to_path_buf();
-            if files_meta.is_some() {
-                file_path.push(name);
+        let mappings_data = tokio::task::spawn_blocking(move || -> Result<Vec<(std::fs::File, u64, u64)>> {
+            std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
+
+            let mut mappings = Vec::new();
+            let mut current_offset = 0u64;
+
+            for tf in torrent_files {
+                let mut file_path = base_dir.clone();
+                if is_multi {
+                    file_path.push(&name);
+                }
+                for p in &tf.path {
+                    file_path.push(p);
+                }
+
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let std_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&file_path)
+                    .with_context(|| format!("failed to open file {}", file_path.display()))?;
+
+                let metadata = std_file.metadata()?;
+                if metadata.len() != tf.length {
+                    std_file.set_len(tf.length)
+                        .with_context(|| format!("failed to preallocate {}", file_path.display()))?;
+                }
+
+                mappings.push((std_file, current_offset, current_offset + tf.length));
+                current_offset += tf.length;
             }
-            for p in &tf.path {
-                file_path.push(p);
+
+            Ok(mappings)
+        }).await??;
+
+        let files = mappings_data.into_iter().map(|(std_file, start_offset, end_offset)| {
+            FileMapping {
+                file: File::from_std(std_file),
+                start_offset,
+                end_offset,
             }
-
-            if let Some(parent) = file_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&file_path)
-                .await
-                .with_context(|| format!("failed to open file {}", file_path.display()))?;
-
-            let metadata = file.metadata().await?;
-            if metadata.len() != tf.length {
-                file.set_len(tf.length)
-                    .await
-                    .with_context(|| format!("failed to preallocate {}", file_path.display()))?;
-            }
-
-            mappings.push(FileMapping {
-                file,
-                start_offset: current_offset,
-                end_offset: current_offset + tf.length,
-            });
-
-            current_offset += tf.length;
-        }
+        }).collect();
 
         Ok(Self {
-            files: mappings,
+            files,
             piece_length,
         })
     }

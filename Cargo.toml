@@ -1,6 +1,6 @@
 [package]
 name = "tortor"
-version = "1.6.0"
+version = "1.6.1"
 edition = "2021"
 authors = ["Vitaliy Golik <GLK Dev>"]
 description = "High-performance BitTorrent client with dynamic SIMD dispatch and zero-copy I/O"

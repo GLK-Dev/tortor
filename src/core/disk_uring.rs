@@ -30,46 +30,57 @@ impl UringDisk {
         files_meta: Option<&Vec<crate::core::torrent::TorrentFile>>,
         name: &str,
     ) -> Result<Self> {
-        let base_dir = base_dir.as_ref();
-        tokio::fs::create_dir_all(base_dir).await.context("failed to create base dir")?;
-
-        let mut mappings = Vec::new();
-        let mut current_offset = 0u64;
-
+        let base_dir = base_dir.as_ref().to_path_buf();
+        let name = name.to_string();
+        let is_multi = files_meta.is_some();
         let torrent_files = files_meta.cloned().unwrap_or_else(|| {
             vec![crate::core::torrent::TorrentFile {
                 length: total_size,
-                path: vec![name.to_string()],
+                path: vec![name.clone()],
             }]
         });
 
-        for tf in torrent_files {
-            let mut file_path = base_dir.to_path_buf();
-            if files_meta.is_some() {
-                file_path.push(name);
-            }
-            for p in &tf.path {
-                file_path.push(p);
+        let mappings_data = tokio::task::spawn_blocking(move || -> Result<Vec<(PathBuf, u64, u64)>> {
+            std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
+
+            let mut mappings = Vec::new();
+            let mut current_offset = 0u64;
+
+            for tf in torrent_files {
+                let mut file_path = base_dir.clone();
+                if is_multi {
+                    file_path.push(&name);
+                }
+                for p in &tf.path {
+                    file_path.push(p);
+                }
+
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let std_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&file_path)
+                    .with_context(|| format!("failed to open file {}", file_path.display()))?;
+
+                let metadata = std_file.metadata()?;
+                if metadata.len() != tf.length {
+                    std_file.set_len(tf.length)
+                        .with_context(|| format!("failed to preallocate {}", file_path.display()))?;
+                }
+
+                mappings.push((file_path, current_offset, current_offset + tf.length));
+                current_offset += tf.length;
             }
 
-            if let Some(parent) = file_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            Ok(mappings)
+        }).await??;
 
-            // Using standard tokio::fs for metadata/allocation since io_uring doesn't provide easy metadata
-            let std_file = tokio::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&file_path)
-                .await?;
-                
-            let metadata = std_file.metadata().await?;
-            if metadata.len() != tf.length {
-                std_file.set_len(tf.length).await?;
-            }
-            drop(std_file);
-
+        let mut mappings = Vec::new();
+        for (file_path, start_offset, end_offset) in mappings_data {
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -79,11 +90,9 @@ impl UringDisk {
 
             mappings.push(UringFileMapping {
                 file,
-                start_offset: current_offset,
-                end_offset: current_offset + tf.length,
+                start_offset,
+                end_offset,
             });
-
-            current_offset += tf.length;
         }
 
         Ok(Self {
@@ -103,27 +112,15 @@ impl AsyncDiskIO for UringDisk {
         while written < data.len() {
             let current_abs_offset = piece_offset + written as u64;
             
-            if let Some(mapping) = self.files.iter().find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset) {
+            if let Some(mapping) = self.files.iter_mut().find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
 
-                let write_buf = if written == 0 && to_write == data.len() {
-                    // Fast path: no splitting needed
-                    data
-                } else {
-                    // Boundary crossing: split data
-                    data[written..written + to_write].to_vec()
-                };
-
-                let (res, returned_buf) = mapping.file.write_at(write_buf, file_offset).await;
+                let slice = data[written..written + to_write].to_vec();
+                let (res, returned_buf) = mapping.file.write_at(slice, file_offset).await;
                 res?;
                 
-                // If it was the fast path, we need to recover 'data' to satisfy the compiler
-                if written == 0 && to_write == returned_buf.len() {
-                    data = returned_buf;
-                }
-
                 written += to_write;
             } else {
                 anyhow::bail!("piece offset out of bounds");
@@ -143,16 +140,16 @@ impl AsyncDiskIO for UringDisk {
         while read < len as usize {
             let current_abs_offset = absolute_offset + read as u64;
 
-            if let Some(mapping) = self.files.iter().find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset) {
+            if let Some(mapping) = self.files.iter_mut().find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
 
                 let buffer = vec![0u8; to_read];
-                let (res, returned_buf) = mapping.file.read_at(buffer, file_offset).await;
+                let (res, buffer) = mapping.file.read_at(buffer, file_offset).await;
                 res?;
                 
-                final_buffer.extend_from_slice(&returned_buf);
+                final_buffer.extend_from_slice(&buffer);
                 read += to_read;
             } else {
                 anyhow::bail!("piece offset out of bounds for read");
