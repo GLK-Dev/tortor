@@ -35,12 +35,27 @@ pub enum CoordinatorState {
         info_hash: [u8; 20],
         output_dir: PathBuf,
     },
+    CheckingFiles {
+        manager: TorrentManager,
+        disk_writer: Box<dyn AsyncDiskIO>,
+        expected_hashes: std::sync::Arc<Vec<[u8; 20]>>,
+        piece_length: u32,
+        total_length: u64,
+        next_piece: u32,
+    },
     DownloadingData {
         manager: TorrentManager,
         disk_writer: Box<dyn AsyncDiskIO>,
         paused: bool,
         has_completed: bool,
     }
+}
+
+struct DummyDisk;
+#[async_trait::async_trait(?Send)]
+impl AsyncDiskIO for DummyDisk {
+    async fn write_piece(&mut self, _index: u32, _data: Vec<u8>) -> anyhow::Result<()> { Ok(()) }
+    async fn read_piece(&mut self, _index: u32, _offset: u32, _len: u32) -> anyhow::Result<Vec<u8>> { Ok(vec![]) }
 }
 
 pub async fn run_coordinator(
@@ -53,6 +68,8 @@ pub async fn run_coordinator(
 ) {
     info!("Coordinator task started");
 
+    let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(1));
+
     loop {
         let msg = tokio::select! {
             _ = shutdown_rx.recv() => {
@@ -60,6 +77,64 @@ pub async fn run_coordinator(
                 break;
             }
             incoming = receiver.recv() => incoming,
+            _ = check_interval.tick(), if matches!(state, CoordinatorState::CheckingFiles { .. }) => {
+                let mut transition = false;
+                if let CoordinatorState::CheckingFiles { manager, disk_writer, expected_hashes, piece_length, total_length, next_piece } = &mut state {
+                    let index = *next_piece;
+                    let total_pieces = manager.total_pieces;
+                    if index >= total_pieces {
+                        transition = true;
+                    } else {
+                        let length = if index == total_pieces - 1 {
+                            let rem = (*total_length % *piece_length as u64) as u32;
+                            if rem == 0 { *piece_length } else { rem }
+                        } else {
+                            *piece_length
+                        };
+
+                        if let Ok(data) = disk_writer.read_piece(index, 0, length).await {
+                            use sha1::{Sha1, Digest};
+                            let mut hasher = Sha1::new();
+                            hasher.update(&data);
+                            let hash = hasher.finalize();
+                            if hash.as_slice() == expected_hashes[index as usize].as_slice() {
+                                manager.mark_completed(index);
+                                let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
+                            }
+                        }
+
+                        *next_piece += 1;
+                        if *next_piece % 10 == 0 || *next_piece == total_pieces {
+                            let pct = (*next_piece as f32 / total_pieces as f32) * 100.0;
+                            let _ = ui_sender.send(CoreMessage::Status(format!("Checking files: {:.1}%", pct))).await;
+                            let _ = ui_sender.send(CoreMessage::GlobalProgress(manager.progress())).await;
+                        }
+                        
+                        if *next_piece >= total_pieces {
+                            transition = true;
+                        }
+                    }
+                }
+
+                if transition {
+                    let dummy_state = CoordinatorState::DownloadingData {
+                        manager: TorrentManager::new(0),
+                        disk_writer: Box::new(DummyDisk),
+                        paused: false,
+                        has_completed: false,
+                    };
+                    if let CoordinatorState::CheckingFiles { manager, disk_writer, .. } = std::mem::replace(&mut state, dummy_state) {
+                        let has_completed = manager.is_done();
+                        if has_completed {
+                            info!("torrent download complete (from local files), entering seeding mode");
+                            let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                        }
+                        let _ = ui_sender.send(CoreMessage::Status("File check complete".to_string())).await;
+                        state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed };
+                    }
+                }
+                continue;
+            }
         };
 
         let Some(msg) = msg else {
@@ -192,7 +267,21 @@ pub async fn run_coordinator(
 
                     match disk_writer_res {
                         Ok(disk_writer) => {
-                            state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
+                            let target_path = output_dir.join(&meta.name);
+                            if target_path.exists() {
+                                let expected_hashes = Arc::new(meta.pieces.clone());
+                                state = CoordinatorState::CheckingFiles {
+                                    manager,
+                                    disk_writer,
+                                    expected_hashes,
+                                    piece_length: meta.piece_length,
+                                    total_length: total_size,
+                                    next_piece: 0,
+                                };
+                                info!("Target path exists, transitioning to CheckingFiles...");
+                            } else {
+                                state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
+                            }
                         }
                         Err(err) => {
                             error!("Failed to initialize disk for downloaded metadata: {}", err);
@@ -206,13 +295,13 @@ pub async fn run_coordinator(
             CoordinatorMsg::Pause => {
                 if let CoordinatorState::DownloadingData { paused, .. } = &mut state {
                     *paused = true;
-                    let _ = ui_sender.send(CoreMessage::Status("Paused".to_string())).await;
+                    let _ = ui_sender.send(CoreMessage::PausedState(true)).await;
                 }
             }
             CoordinatorMsg::Resume => {
                 if let CoordinatorState::DownloadingData { paused, .. } = &mut state {
                     *paused = false;
-                    let _ = ui_sender.send(CoreMessage::Status("Resumed".to_string())).await;
+                    let _ = ui_sender.send(CoreMessage::PausedState(false)).await;
                 }
             }
         }

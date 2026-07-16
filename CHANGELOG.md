@@ -7,6 +7,10 @@
 - **Seeding Transition:** Fixed an issue where the coordinator task would stop instead of transitioning into Seeding mode after a download completed. (Исправлена проблема, из-за которой координатор останавливался после 100% загрузки вместо перехода в режим раздачи).
 - **Missing Files / Magnet Resume Bug:** Fixed a logic bug where restarting the client with missing files or using Magnet links would erroneously overwrite the `fastresume` state and silently re-download from 0%. The torrent is now correctly paused if files are missing. (Исправлен баг, при котором перезапуск клиента приводил к тихому удалению прогресса и перекачиванию с нуля. Теперь, если файлы перемещены, торрент корректно ставится на паузу).
 
+### Added
+- **Local File Verification (Force Recheck):** TorTor теперь проверяет хэши существующих файлов при добавлении торрента. Если файлы уже скачаны, клиент автоматически восстановит прогресс (работает и для Magnet-ссылок).
+- **UI State Sync:** Синхронизация кнопки "Пауза/Продолжить" с состоянием ядра. Если загрузка прервана из-за отсутствия файлов, кнопка корректно переключается в "Продолжить" для старта с нуля в один клик.
+
 ## [1.5.0-alpha] - 2026-07-14
 
 ### Features / Новые функции

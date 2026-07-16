@@ -22,6 +22,7 @@ use crate::core::resume::load_fastresume;
 use crate::core::torrent::TorrentMeta;
 use crate::net::swarm;
 use crate::net::tracker;
+use crate::core::disk_io::AsyncDiskIO;
 
 #[derive(Debug, Clone)]
 enum ProbeState {
@@ -226,6 +227,8 @@ fn background_task(
         }
     }
     
+    let mut requires_check = false;
+
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
         Ok(Some(state)) if is_valid => {
             let mgr = state.clone().into_manager(meta.pieces_count);
@@ -242,11 +245,19 @@ fn background_task(
              tx.send((session_id, CoreMessage::Status("[ERROR: Missing]".to_string()))).ok();
              tx.send((session_id, CoreMessage::Error("Files missing. Torrent paused.".to_string()))).ok(); // signal error state
              // Pause the core right away to prevent re-downloading from scratch
-             tx.send((session_id, CoreMessage::Status("Paused".to_string()))).ok();
+             tx.send((session_id, CoreMessage::PausedState(true))).ok();
              mgr
         }
-        Ok(None) => TorrentManager::new(meta.pieces_count),
+        Ok(None) => {
+            if is_valid && target_path.exists() {
+                requires_check = true;
+            }
+            TorrentManager::new(meta.pieces_count)
+        }
         Err(err) => {
+            if is_valid && target_path.exists() {
+                requires_check = true;
+            }
             tx.send((session_id, CoreMessage::Status(format!(
                 "Failed to load fast resume: {err}"
             ))))
@@ -262,6 +273,7 @@ fn background_task(
         let meta_files = meta.files.clone();
         let meta_name = meta.name.clone();
         let meta_piece_length = meta.piece_length;
+        let meta_pieces_c = meta.pieces.clone();
         
         let ui_async_tx_c = ui_async_tx.clone();
         let shutdown_rx_c = shutdown_tx.subscribe();
@@ -279,8 +291,20 @@ fn background_task(
                     &meta_name,
                 ).await {
                     Ok(disk_writer) => {
-                        let disk_writer = Box::new(disk_writer);
-                        let mut state = coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
+                        let disk_writer = Box::new(disk_writer) as Box<dyn AsyncDiskIO>;
+                        let mut state = if requires_check && !meta_pieces_c.is_empty() {
+                            coordinator::CoordinatorState::CheckingFiles {
+                                manager,
+                                disk_writer,
+                                expected_hashes: std::sync::Arc::new(meta_pieces_c),
+                                piece_length: meta_piece_length,
+                                total_length: total_size,
+                                next_piece: 0,
+                            }
+                        } else {
+                            coordinator::CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false }
+                        };
+                        
                         // If it's paused due to error, set state.paused = true
                         if !is_valid {
                             if let coordinator::CoordinatorState::DownloadingData { ref mut paused, .. } = state {
@@ -522,6 +546,14 @@ impl TorTorApp {
                     session.status = text.clone();
                     session.logs.push(text);
                 }
+                CoreMessage::PausedState(paused) => {
+                    session.is_paused = paused;
+                    if paused {
+                        session.status = "Paused".to_string();
+                    } else {
+                        session.status = "Resumed".to_string();
+                    }
+                }
                 CoreMessage::TorrentLoaded(meta) => {
                     session.logs.push(format!("Loaded torrent: {}", meta.name));
                     session.meta = Some(meta);
@@ -597,7 +629,7 @@ impl eframe::App for TorTorApp {
         visuals.window_fill = Color32::from_rgb(10, 15, 26);
         visuals.panel_fill = Color32::from_rgb(10, 15, 26);
         visuals.selection.bg_fill = Color32::from_rgb(0, 210, 255);
-        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 209));
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(0, 255, 209));
         visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 25, 40);
         visuals.widgets.inactive.bg_fill = Color32::from_rgb(25, 40, 60);
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(0, 210, 255);
@@ -776,7 +808,7 @@ impl eframe::App for TorTorApp {
                         .fill(bg_color)
                         .rounding(8.0)
                         .inner_margin(12.0)
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0, 150, 200).linear_multiply(0.3)));
+                        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(0, 150, 200).linear_multiply(0.3)));
 
                     frame.show(ui, |ui| {
                         ui.horizontal(|ui| {

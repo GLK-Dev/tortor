@@ -39,6 +39,7 @@ pub enum CoreMessage {
     TelemetryUpdate(SocketAddr, SessionTelemetry),
     BytesTransferred(usize, usize),
     Error(String),
+    PausedState(bool),
 }
 
 #[derive(Debug, Clone)]
