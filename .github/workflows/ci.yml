@@ -7,21 +7,40 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  test:
+  fmt:
+    name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+      - run: cargo fmt --all -- --check
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+  test:
+    name: Lint, test and build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
 
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -32,17 +51,37 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tortor-${{ matrix.os }}
+          path: |
+            target/release/tortor
+            target/release/tortor.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  headless:
+    name: Build without the GUI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - run: cargo build --release --no-default-features
+
   audit:
+    name: Dependency audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
       checks: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Audit dependencies
-        uses: rustsec/audit-check@v2
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn generate_peer_id() -> [u8; 20] {
     let mut peer_id = [b'0'; 20];
-    let prefix = b"-TT0001-";
+    let prefix = b"-TT1700-";
     peer_id[..prefix.len()].copy_from_slice(prefix);
 
     let seed = SystemTime::now()
@@ -24,6 +24,6 @@ mod tests {
     fn peer_id_has_expected_shape() {
         let id = generate_peer_id();
         assert_eq!(id.len(), 20);
-        assert_eq!(&id[..8], b"-TT0001-");
+        assert_eq!(&id[..8], b"-TT1700-");
     }
 }

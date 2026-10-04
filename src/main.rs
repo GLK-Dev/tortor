@@ -14,6 +14,7 @@ use tortor::core::peer_id::generate_peer_id;
 use tortor::net::listener;
 use tortor::net::tracker;
 
+#[cfg(feature = "gui")]
 use tortor::ui::dashboard;
 
 /// TorTor - High-performance BitTorrent client
@@ -51,7 +52,8 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let run_gui = !args.cli;
+    // Without the `gui` feature there is only the command-line mode.
+    let run_gui = cfg!(feature = "gui") && !args.cli;
 
     let log_level = if args.verbose {
         Level::DEBUG
@@ -60,10 +62,18 @@ fn main() -> Result<()> {
     };
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
+    #[cfg(feature = "gui")]
     if run_gui {
         let port = args.listen_port.unwrap_or(6881);
-        return dashboard::run_dashboard(args.torrent.clone(), port, args.output);
+        return dashboard::run_dashboard(
+            args.torrent.clone(),
+            args.magnet.clone(),
+            port,
+            args.output,
+        );
     }
+    #[cfg(not(feature = "gui"))]
+    let _ = run_gui;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

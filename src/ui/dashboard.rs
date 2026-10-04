@@ -127,6 +127,7 @@ fn ascii_progress_bar(progress: f32, width: usize) -> String {
 
 pub fn run_dashboard(
     initial_torrent_path: Option<PathBuf>,
+    initial_magnet: Option<String>,
     listen_port: u16,
     output_dir: PathBuf,
 ) -> Result<()> {
@@ -175,6 +176,13 @@ pub fn run_dashboard(
             if let Some(path) = initial_torrent_path {
                 app.start_core(
                     crate::core::session_store::TorrentSource::File(path),
+                    output_dir.clone(),
+                    None,
+                );
+            }
+            if let Some(uri) = initial_magnet {
+                app.start_core(
+                    crate::core::session_store::TorrentSource::Magnet(uri),
                     output_dir,
                     None,
                 );
@@ -1045,7 +1053,7 @@ impl eframe::App for TorTorApp {
                             .color(Color32::from_rgb(0, 210, 255)),
                     );
                     ui.label(
-                        RichText::new("Version 1.6.3")
+                        RichText::new(concat!("Version ", env!("CARGO_PKG_VERSION")))
                             .size(14.0)
                             .color(Color32::from_rgb(0, 255, 209)),
                     );

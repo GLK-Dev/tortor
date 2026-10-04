@@ -1,6 +1,6 @@
 [package]
 name = "tortor"
-version = "1.6.3"
+version = "1.7.0"
 edition = "2021"
 authors = ["Vitaliy Golik <GLK Dev>"]
 description = "High-performance BitTorrent client with dynamic SIMD dispatch and zero-copy I/O"
@@ -31,7 +31,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 url = "2.4"
-eframe = { version = "0.29", optional = true, default-features = false, features = ["default_fonts", "glow"] }
+eframe = { version = "0.29", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 rfd = "0.14"
 dirs = "6"
 igd-next = { version = "0.17", features = ["aio_tokio"] }
