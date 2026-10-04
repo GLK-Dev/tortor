@@ -1,5 +1,8 @@
 pub mod handshake;
+pub mod inbound;
 pub mod listener;
+pub mod magnet;
+pub mod metadata;
 pub mod probe;
 pub mod session;
 pub mod swarm;

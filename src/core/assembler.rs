@@ -114,6 +114,14 @@ impl PieceAssembler {
         self.received_bytes
     }
 
+    /// Forgets which blocks were requested so they are requested again, e.g.
+    /// after the peer choked us and dropped our pending requests.
+    pub fn reset_requests(&mut self) {
+        for block in self.blocks.iter_mut().filter(|b| !b.completed) {
+            block.requested_at = None;
+        }
+    }
+
     pub fn add_block(&mut self, begin: u32, data: &[u8]) -> AssemblerState {
         if (begin as u64) + (data.len() as u64) > self.expected_length as u64 {
             return AssemblerState::Error("block exceeds piece boundary".to_string());

@@ -61,4 +61,13 @@ impl MetadataAssembler {
     pub fn next_missing_piece(&self) -> Option<u32> {
         (0..self.total_pieces).find(|i| !self.received_pieces.contains(i))
     }
+
+    pub fn size(&self) -> usize {
+        self.metadata_size
+    }
+
+    /// First piece that is neither received nor accepted by `skip`.
+    pub fn next_piece_where(&self, skip: impl Fn(u32) -> bool) -> Option<u32> {
+        (0..self.total_pieces).find(|i| !self.received_pieces.contains(i) && !skip(*i))
+    }
 }

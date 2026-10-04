@@ -7,6 +7,8 @@ pub struct TorrentFile {
 #[derive(Debug, Clone)]
 pub struct TorrentMeta {
     pub announce: String,
+    /// Every distinct http/https/udp tracker: `announce` first, then `announce-list` (BEP 12).
+    pub trackers: Vec<String>,
     pub name: String,
     pub piece_length: u32,
     pub pieces_count: u32,
@@ -33,8 +35,16 @@ impl TorrentMeta {
                 .map(|fs| fs.iter().fold(0u64, |acc, f| acc.saturating_add(f.length)))
         });
 
+        let announce = announce.into();
+        let trackers = if crate::net::tracker::is_supported_tracker(&announce) {
+            vec![announce.clone()]
+        } else {
+            Vec::new()
+        };
+
         Self {
-            announce: announce.into(),
+            announce,
+            trackers,
             name: name.into(),
             piece_length,
             pieces_count,
@@ -47,6 +57,17 @@ impl TorrentMeta {
 
     pub fn info_hash_hex(&self) -> String {
         hex::encode(self.info_hash)
+    }
+
+    /// Adds trackers (e.g. from `announce-list` or a magnet link), skipping
+    /// unsupported schemes and duplicates.
+    pub fn with_extra_trackers(mut self, extra: impl IntoIterator<Item = String>) -> Self {
+        for url in extra {
+            if crate::net::tracker::is_supported_tracker(&url) && !self.trackers.contains(&url) {
+                self.trackers.push(url);
+            }
+        }
+        self
     }
 
     pub fn piece_hash(&self, index: usize) -> Option<[u8; 20]> {

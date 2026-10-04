@@ -37,7 +37,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     dht_cmd_tx
-        .send(DhtManagerCommand::StartSearch(info_hash))
+        .send(DhtManagerCommand::StartSearch {
+            info_hash,
+            announce_port: None,
+        })
         .await?;
 
     let timeout = tokio::time::sleep(Duration::from_secs(30));

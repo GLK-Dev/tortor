@@ -99,21 +99,23 @@ async fn run_cli(args: Args) -> Result<()> {
     let port = args.listen_port.unwrap_or(6881);
 
     if args.announce_tracker {
-        if meta.announce.starts_with("http://") || meta.announce.starts_with("https://") {
+        if !meta.trackers.is_empty() {
             let left = meta
                 .total_length
                 .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
 
-            let peers = tracker::announce(
-                &meta.announce,
-                &meta.info_hash,
-                &peer_id,
+            let params = tracker::AnnounceParams {
+                info_hash: &meta.info_hash,
+                peer_id: &peer_id,
                 port,
+                uploaded: 0,
+                downloaded: 0,
                 left,
-                Some("started"),
-            )
-            .await
-            .context("tracker announce failed")?;
+                event: Some("started"),
+            };
+            let peers = tracker::announce_all(&meta.trackers, &params, |_| {})
+                .await
+                .context("tracker announce failed")?;
 
             println!("Peers from tracker: {}", peers.len());
             for peer in peers.iter().take(20) {
@@ -123,10 +125,7 @@ async fn run_cli(args: Args) -> Result<()> {
                 println!("  ... and {} more", peers.len() - 20);
             }
         } else {
-            warn!(
-                "Skipping tracker announce: only HTTP/HTTPS trackers are supported right now ({})",
-                meta.announce
-            );
+            warn!("Skipping tracker announce: the torrent has no HTTP/HTTPS/UDP trackers");
         }
     }
 

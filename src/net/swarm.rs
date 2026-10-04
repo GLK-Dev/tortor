@@ -1,21 +1,27 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::core::command::CoreMessage;
 use crate::core::coordinator::CoordinatorMsg;
+use crate::net::inbound;
 use crate::net::probe;
+use crate::net::session::{PeerContext, TransferStats, UploadSlots, MAX_UPLOAD_SLOTS};
 use crate::net::tracker;
 
 const MAX_ACTIVE_PEERS: usize = 30;
 const SWARM_TICK_SECS: u64 = 5;
-const PEER_IDLE_TIMEOUT_SECS: u64 = 60;
+/// Backstop only: sessions drop silent or useless peers on their own.
+const PEER_IDLE_TIMEOUT_SECS: u64 = 300;
+const MAX_INBOUND_PEERS: usize = 50;
+const MAX_QUEUED_PEERS: usize = 2000;
 const PEER_THRESHOLD: usize = 5;
 const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -38,17 +44,18 @@ struct ActivePeer {
 struct SwarmState {
     last_announce: Option<Instant>,
     announce_in_progress: bool,
-    tracker_url: String,
+    tracker_urls: Vec<String>,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
     listen_port: u16,
     left_hint: u64,
     event: Option<String>,
+    stats: Arc<TransferStats>,
 }
 
 pub async fn run_swarm_manager(
     mut available_peers: VecDeque<SocketAddr>,
-    tracker_url: String,
+    tracker_urls: Vec<String>,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
     listen_port: u16,
@@ -82,41 +89,75 @@ pub async fn run_swarm_manager(
     };
 
     let mut current_port = listen_port;
-    let mut quic_endpoint_opt = None;
-    let mut final_dht_port = current_port.saturating_add(1);
+    let mut bound = None;
 
+    // TCP and QUIC (UDP) share the same port number; DHT uses the next one.
     for _ in 0..100 {
-        let addr: std::net::SocketAddr = format!("0.0.0.0:{}", current_port).parse().unwrap();
+        let addr = SocketAddr::from(([0, 0, 0, 0], current_port));
 
-        match quinn::Endpoint::server(server_config.clone(), addr) {
-            Ok(endpoint) => {
-                quic_endpoint_opt = Some(endpoint);
-                final_dht_port = current_port.saturating_add(1);
-                tracing::info!("QUIC listener successfully bound to {}", addr);
+        let tcp = tokio::net::TcpListener::bind(addr).await;
+        let quic = quinn::Endpoint::server(server_config.clone(), addr);
+        match (tcp, quic) {
+            (Ok(tcp), Ok(quic)) => {
+                info!("TCP and QUIC listeners bound to {}", addr);
+                bound = Some((tcp, quic));
                 break;
             }
-            Err(e) => {
-                tracing::warn!(
-                    "Port {} is busy (Error: {}). Trying next...",
-                    current_port,
-                    e
-                );
+            (tcp, quic) => {
+                let reason = tcp
+                    .err()
+                    .map(|e| e.to_string())
+                    .or_else(|| quic.err().map(|e| e.to_string()))
+                    .unwrap_or_default();
+                warn!("Port {current_port} is busy ({reason}). Trying next...");
                 current_port = current_port.saturating_add(2);
             }
         }
     }
+    let final_dht_port = current_port.saturating_add(1);
 
-    let Some(mut quic_endpoint) = quic_endpoint_opt else {
-        error!("No available port to bind the QUIC endpoint");
+    let Some((tcp_listener, mut quic_endpoint)) = bound else {
+        error!("No available port to bind the peer listeners");
         let _ = ui_sender
             .send(CoreMessage::Error(
-                "No available port to bind the QUIC endpoint".to_string(),
+                "No available port to bind the peer listeners".to_string(),
             ))
             .await;
         return;
     };
     quic_endpoint.set_default_client_config(client_config);
-    let quic_endpoint = std::sync::Arc::new(quic_endpoint);
+    let quic_endpoint = Arc::new(quic_endpoint);
+
+    let peer_ctx = PeerContext {
+        expected_hashes,
+        piece_length,
+        total_length,
+        ui_sender: ui_sender.clone(),
+        coord_sender,
+        swarm_event_tx: Some(event_tx.clone()),
+        upload_slots: UploadSlots::new(MAX_UPLOAD_SLOTS),
+        stats: Arc::new(TransferStats::default()),
+    };
+    let inbound_limit = Arc::new(Semaphore::new(MAX_INBOUND_PEERS));
+
+    spawn_tcp_acceptor(
+        tcp_listener,
+        info_hash,
+        peer_id,
+        peer_ctx.clone(),
+        inbound_limit.clone(),
+        shutdown_tx.clone(),
+        announce_tx.clone(),
+    );
+    spawn_quic_acceptor(
+        quic_endpoint.clone(),
+        info_hash,
+        peer_id,
+        peer_ctx.clone(),
+        inbound_limit,
+        shutdown_tx.clone(),
+        announce_tx.clone(),
+    );
 
     // Initialize DHT Manager safely using the adjacent free port
     if let Ok((dht_manager, dht_cmd_tx)) =
@@ -124,20 +165,22 @@ pub async fn run_swarm_manager(
     {
         tokio::spawn(dht_manager.run());
         let _ = dht_cmd_tx
-            .send(crate::net::dht::actor::DhtManagerCommand::StartSearch(
-                crate::net::dht::routing::NodeId(info_hash),
-            ))
+            .send(crate::net::dht::actor::DhtManagerCommand::StartSearch {
+                info_hash: crate::net::dht::routing::NodeId(info_hash),
+                announce_port: Some(current_port),
+            })
             .await;
     }
     let mut swarm_state = SwarmState {
         last_announce: None,
         announce_in_progress: false,
-        tracker_url,
+        tracker_urls,
         info_hash,
         peer_id,
-        listen_port,
+        listen_port: current_port,
         left_hint,
         event: Some("started".to_string()),
+        stats: peer_ctx.stats.clone(),
     };
 
     let _ = ui_sender
@@ -167,15 +210,7 @@ pub async fn run_swarm_manager(
                         SwarmEvent::TrackerPeersReceived(addrs) => {
                             swarm_state.announce_in_progress = false;
                             swarm_state.event = None; // clear event after successful announce
-                            let mut added = 0usize;
-
-                            for addr in addrs {
-                                if active.contains_key(&addr) || available_peers.contains(&addr) {
-                                    continue;
-                                }
-                                available_peers.push_back(addr);
-                                added += 1;
-                            }
+                            let added = enqueue_peers(&mut available_peers, &active, addrs);
 
                             info!("tracker re-announce added {} peers", added);
                             let _ = ui_sender
@@ -187,14 +222,7 @@ pub async fn run_swarm_manager(
                                 .await;
                         }
                         SwarmEvent::PexPeersReceived(addrs) => {
-                            let mut added = 0usize;
-                            for addr in addrs {
-                                if active.contains_key(&addr) || available_peers.contains(&addr) {
-                                    continue;
-                                }
-                                available_peers.push_back(addr);
-                                added += 1;
-                            }
+                            let added = enqueue_peers(&mut available_peers, &active, addrs);
                             if added > 0 {
                                 info!("PEX discovered {} new peers", added);
                                 let _ = ui_sender
@@ -207,14 +235,7 @@ pub async fn run_swarm_manager(
                             }
                         }
                         SwarmEvent::DhtPeersReceived(addrs) => {
-                            let mut added = 0usize;
-                            for addr in addrs {
-                                if active.contains_key(&addr) || available_peers.contains(&addr) {
-                                    continue;
-                                }
-                                available_peers.push_back(addr);
-                                added += 1;
-                            }
+                            let added = enqueue_peers(&mut available_peers, &active, addrs);
                             if added > 0 {
                                 info!("DHT discovered {} new peers", added);
                                 let _ = ui_sender
@@ -292,13 +313,12 @@ pub async fn run_swarm_manager(
 
                     let _ = ui_sender.send(CoreMessage::ProbeQueued(addr)).await;
 
-                    let expected_hashes_cloned = Arc::clone(&expected_hashes);
-                    let ui_sender_cloned = ui_sender.clone();
-                    let coord_sender_cloned = coord_sender.clone();
+                    let ctx = peer_ctx.clone();
                     let quic_endpoint_cloned = quic_endpoint.clone();
                     let event_tx_cloned = event_tx.clone();
                     let local_shutdown_rx = shutdown_tx.subscribe();
                     let local_announce_rx = announce_tx.subscribe();
+                    let ui_sender_cloned = ui_sender.clone();
 
                     let handle = tokio::spawn(async move {
                         let _ = ui_sender_cloned.send(CoreMessage::ProbeStarted(addr)).await;
@@ -306,13 +326,8 @@ pub async fn run_swarm_manager(
                             addr,
                             info_hash,
                             peer_id,
-                            expected_hashes_cloned,
-                            piece_length,
-                            total_length,
-                            ui_sender_cloned.clone(),
-                            coord_sender_cloned,
+                            ctx,
                             local_shutdown_rx,
-                            Some(event_tx_cloned.clone()),
                             local_announce_rx,
                             quic_endpoint_cloned,
                         )
@@ -368,18 +383,14 @@ pub async fn run_swarm_manager(
     for (_, peer) in active {
         peer.handle.abort();
     }
+    quic_endpoint.close(0u32.into(), b"shutdown");
 
-    tracing::info!("Graceful shutdown: Sending event=stopped tracker announce...");
-    let event_str = Some("stopped");
-    let announce_future = tracker::announce(
-        &swarm_state.tracker_url,
-        &swarm_state.info_hash,
-        &swarm_state.peer_id,
-        swarm_state.listen_port,
-        swarm_state.left_hint,
-        event_str,
-    );
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), announce_future).await;
+    if !swarm_state.tracker_urls.is_empty() {
+        tracing::info!("Graceful shutdown: Sending event=stopped tracker announce...");
+        let params = swarm_state.announce_params(Some("stopped"));
+        let announce_future = tracker::announce_all(&swarm_state.tracker_urls, &params, |_| {});
+        let _ = tokio::time::timeout(Duration::from_secs(2), announce_future).await;
+    }
     tracing::info!("Swarm network interfaces closed. Exit.");
 
     let _ = ui_sender
@@ -387,8 +398,28 @@ pub async fn run_swarm_manager(
         .await;
 }
 
+impl SwarmState {
+    fn announce_params(&self, event: Option<&'static str>) -> tracker::AnnounceParams<'_> {
+        let downloaded = self.stats.downloaded.load(Ordering::Relaxed);
+        let left = if self.event.as_deref() == Some("completed") {
+            0
+        } else {
+            self.left_hint.saturating_sub(downloaded)
+        };
+        tracker::AnnounceParams {
+            info_hash: &self.info_hash,
+            peer_id: &self.peer_id,
+            port: self.listen_port,
+            uploaded: self.stats.uploaded.load(Ordering::Relaxed),
+            downloaded,
+            left,
+            event,
+        }
+    }
+}
+
 fn should_reannounce(state: &SwarmState, available_len: usize, active_len: usize) -> bool {
-    if state.announce_in_progress {
+    if state.tracker_urls.is_empty() || state.announce_in_progress {
         return false;
     }
 
@@ -406,30 +437,141 @@ fn start_reannounce(state: &mut SwarmState, event_tx: mpsc::UnboundedSender<Swar
     state.announce_in_progress = true;
     state.last_announce = Some(Instant::now());
 
-    let tracker_url = state.tracker_url.clone();
+    let tracker_urls = state.tracker_urls.clone();
     let info_hash = state.info_hash;
     let peer_id = state.peer_id;
     let listen_port = state.listen_port;
+    let stats = state.stats.clone();
     let left_hint = state.left_hint;
+    let completed = state.event.as_deref() == Some("completed");
     let event_str = state.event.clone();
 
     tokio::spawn(async move {
-        match tracker::announce(
-            &tracker_url,
-            &info_hash,
-            &peer_id,
-            listen_port,
-            left_hint,
-            event_str.as_deref(),
-        )
-        .await
-        {
-            Ok(peers) => {
-                let addrs = peers.into_iter().map(|p| p.addr).collect();
-                let _ = event_tx.send(SwarmEvent::TrackerPeersReceived(addrs));
+        let downloaded = stats.downloaded.load(Ordering::Relaxed);
+        let params = tracker::AnnounceParams {
+            info_hash: &info_hash,
+            peer_id: &peer_id,
+            port: listen_port,
+            uploaded: stats.uploaded.load(Ordering::Relaxed),
+            downloaded,
+            left: if completed {
+                0
+            } else {
+                left_hint.saturating_sub(downloaded)
+            },
+            event: event_str.as_deref(),
+        };
+        let delivered = event_tx.clone();
+        let result = tracker::announce_all(&tracker_urls, &params, |peers| {
+            // Hand peers over as soon as each tracker answers instead of waiting for the slowest one.
+            let addrs = peers.iter().map(|p| p.addr).collect();
+            let _ = delivered.send(SwarmEvent::TrackerPeersReceived(addrs));
+        })
+        .await;
+        if let Err(err) = result {
+            let _ = event_tx.send(SwarmEvent::TrackerAnnounceFailed(err.to_string()));
+        }
+    });
+}
+
+/// Queues new dialable peers (bounded) and returns how many were added.
+fn enqueue_peers(
+    queue: &mut VecDeque<SocketAddr>,
+    active: &HashMap<SocketAddr, ActivePeer>,
+    addrs: Vec<SocketAddr>,
+) -> usize {
+    let mut added = 0usize;
+    for addr in addrs {
+        if queue.len() >= MAX_QUEUED_PEERS {
+            break;
+        }
+        let dialable = addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast();
+        if !dialable || active.contains_key(&addr) || queue.contains(&addr) {
+            continue;
+        }
+        queue.push_back(addr);
+        added += 1;
+    }
+    added
+}
+
+fn spawn_tcp_acceptor(
+    listener: tokio::net::TcpListener,
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+    ctx: PeerContext,
+    limit: Arc<Semaphore>,
+    shutdown_tx: broadcast::Sender<()>,
+    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
+) {
+    tokio::spawn(async move {
+        let mut stop = shutdown_tx.subscribe();
+        loop {
+            tokio::select! {
+                _ = stop.recv() => break,
+                accepted = listener.accept() => match accepted {
+                    Ok((socket, addr)) => {
+                        let Ok(permit) = limit.clone().try_acquire_owned() else {
+                            continue;
+                        };
+                        let ctx = ctx.clone();
+                        let shutdown_rx = shutdown_tx.subscribe();
+                        let announce_rx = announce_tx.subscribe();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Err(err) = inbound::serve_tcp(
+                                socket, addr, info_hash, peer_id, ctx, shutdown_rx, announce_rx,
+                            )
+                            .await
+                            {
+                                debug!("inbound TCP peer {addr} ended: {err}");
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        warn!("failed to accept TCP peer: {err}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                },
             }
-            Err(err) => {
-                let _ = event_tx.send(SwarmEvent::TrackerAnnounceFailed(err.to_string()));
+        }
+    });
+}
+
+fn spawn_quic_acceptor(
+    endpoint: Arc<quinn::Endpoint>,
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+    ctx: PeerContext,
+    limit: Arc<Semaphore>,
+    shutdown_tx: broadcast::Sender<()>,
+    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
+) {
+    tokio::spawn(async move {
+        let mut stop = shutdown_tx.subscribe();
+        loop {
+            tokio::select! {
+                _ = stop.recv() => break,
+                incoming = endpoint.accept() => {
+                    let Some(incoming) = incoming else { break };
+                    let Ok(permit) = limit.clone().try_acquire_owned() else {
+                        incoming.refuse();
+                        continue;
+                    };
+                    let ctx = ctx.clone();
+                    let shutdown_rx = shutdown_tx.subscribe();
+                    let announce_rx = announce_tx.subscribe();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        if let Err(err) = inbound::serve_quic(
+                            incoming, info_hash, peer_id, ctx, shutdown_rx, announce_rx,
+                        )
+                        .await
+                        {
+                            debug!("inbound QUIC peer ended: {err}");
+                        }
+                    });
+                }
             }
         }
     });

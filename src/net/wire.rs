@@ -178,6 +178,26 @@ impl PeerMessage {
         Ok(Some(msg))
     }
 
+    pub async fn send_keepalive(
+        stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
+    ) -> Result<()> {
+        stream
+            .write_all(&[0u8; 4])
+            .await
+            .context("failed to send KeepAlive")?;
+        Ok(())
+    }
+
+    pub async fn send_not_interested(
+        stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
+    ) -> Result<()> {
+        stream
+            .write_all(&[0u8, 0, 0, 1, 3])
+            .await
+            .context("failed to send NotInterested")?;
+        Ok(())
+    }
+
     pub async fn send_choke(
         stream: &mut crate::net::shaper::ShapedStream<&mut crate::net::transport::PeerStream>,
     ) -> Result<()> {

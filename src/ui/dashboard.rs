@@ -96,6 +96,34 @@ pub fn run_dashboard(
     Ok(())
 }
 
+fn initial_coordinator_state(
+    manager: TorrentManager,
+    disk_writer: Box<dyn AsyncDiskIO>,
+    requires_check: bool,
+    pieces: Vec<[u8; 20]>,
+    piece_length: u32,
+    total_length: u64,
+    start_paused: bool,
+) -> coordinator::CoordinatorState {
+    if requires_check && !pieces.is_empty() {
+        coordinator::CoordinatorState::CheckingFiles {
+            manager,
+            disk_writer,
+            expected_hashes: Arc::new(pieces),
+            piece_length,
+            total_length,
+            next_piece: 0,
+        }
+    } else {
+        coordinator::CoordinatorState::DownloadingData {
+            manager,
+            disk_writer,
+            paused: start_paused,
+            has_completed: false,
+        }
+    }
+}
+
 fn background_task(
     session_id: usize,
     tx: mpsc::Sender<(usize, CoreMessage)>,
@@ -104,8 +132,22 @@ fn background_task(
     listen_port: u16,
     output_dir: PathBuf,
 ) -> Result<()> {
-    let meta = match &torrent_source {
-        TorrentSource::File(path) => match bencode::parse_torrent_file(path) {
+    let magnet = match &torrent_source {
+        TorrentSource::Magnet(uri) => match crate::net::magnet::parse(uri) {
+            Ok(magnet) => Some(magnet),
+            Err(e) => {
+                let _ = tx.send((
+                    session_id,
+                    CoreMessage::Error(format!("Invalid magnet link: {e}")),
+                ));
+                return Err(e);
+            }
+        },
+        TorrentSource::File(_) => None,
+    };
+
+    let mut meta = match (&torrent_source, &magnet) {
+        (TorrentSource::File(path), _) => match bencode::parse_torrent_file(path) {
             Ok(m) => m,
             Err(e) => {
                 let _ = tx.send((
@@ -115,31 +157,21 @@ fn background_task(
                 return Err(e.into());
             }
         },
-        TorrentSource::Magnet(uri) => {
-            // Very basic Magnet URI parse for now (we just need info_hash)
-            let mut info_hash = [0u8; 20];
-            if let Some(hash_str) = uri
-                .split("urn:btih:")
-                .nth(1)
-                .map(|s| s.split('&').next().unwrap_or(s))
-            {
-                if hash_str.len() == 40 {
-                    if let Ok(bytes) = hex::decode(hash_str) {
-                        info_hash.copy_from_slice(&bytes);
-                    }
-                }
-            }
-            TorrentMeta {
-                info_hash,
-                name: "Magnet Download".to_string(),
-                piece_length: 256 * 1024,
-                pieces_count: 0,
-                total_length: None,
-                announce: "".to_string(),
-                pieces: vec![],
-                files: None,
-            }
-        }
+        (_, Some(magnet)) => TorrentMeta::new(
+            "",
+            magnet
+                .name
+                .clone()
+                .unwrap_or_else(|| "Magnet Download".to_string()),
+            256 * 1024,
+            0,
+            vec![],
+            None,
+            None,
+            magnet.info_hash,
+        )
+        .with_extra_trackers(magnet.trackers.clone()),
+        _ => unreachable!("a magnet source always yields a parsed magnet"),
     };
     tx.send((session_id, CoreMessage::TorrentLoaded(meta.clone())))
         .ok();
@@ -176,43 +208,113 @@ fn background_task(
         return Ok(());
     }
 
-    let tracker_url = meta.announce.clone();
-    if !(tracker_url.starts_with("http://")
-        || tracker_url.starts_with("https://")
-        || tracker_url.starts_with("udp://"))
-    {
+    let peer_id = generate_peer_id();
+
+    if meta.pieces.is_empty() {
+        // Magnet link: fetch the info dictionary from the swarm first.
         tx.send((
             session_id,
-            CoreMessage::Status(format!(
-                "Tracker is not HTTP/HTTPS/UDP, skipping announce: {tracker_url}"
-            )),
+            CoreMessage::Status("Fetching metadata from peers...".to_string()),
         ))
         .ok();
-        return Ok(());
-    }
 
-    tx.send((
-        session_id,
-        CoreMessage::Status(format!("Announcing to tracker: {tracker_url}")),
-    ))
-    .ok();
+        let status_tx = tx.clone();
+        let options = crate::net::metadata::FetchOptions {
+            info_hash: meta.info_hash,
+            peer_id,
+            listen_port,
+            trackers: meta.trackers.clone(),
+            initial_peers: Vec::new(),
+            use_dht: true,
+            timeout: Duration::from_secs(300),
+        };
+        let fetch = runtime.spawn(crate::net::metadata::fetch_metadata(options, move |text| {
+            let _ = status_tx.send((session_id, CoreMessage::Status(text)));
+        }));
+
+        loop {
+            if fetch.is_finished() {
+                break;
+            }
+            match command_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(CoreCommand::StopAll) => {
+                    fetch.abort();
+                    tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+                    return Ok(());
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        }
+
+        let fetched = runtime
+            .block_on(fetch)
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+            .and_then(|bytes| {
+                bencode::parse_torrent_metadata_bytes(&bytes, meta.info_hash)
+                    .map_err(anyhow::Error::from)
+            });
+        match fetched {
+            Ok(fetched) => {
+                meta = fetched.with_extra_trackers(meta.trackers.clone());
+                tx.send((
+                    session_id,
+                    CoreMessage::MetadataReady(Arc::new(meta.clone())),
+                ))
+                .ok();
+            }
+            Err(e) => {
+                tx.send((
+                    session_id,
+                    CoreMessage::Error(format!("Failed to fetch metadata: {e:#}")),
+                ))
+                .ok();
+                return Err(e);
+            }
+        }
+    }
 
     let left = meta
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
-    let peer_id = generate_peer_id();
 
-    let peers = runtime.block_on(async {
-        tracker::announce(
-            &tracker_url,
-            &meta.info_hash,
-            &peer_id,
-            listen_port,
+    let peers = if meta.trackers.is_empty() {
+        tx.send((
+            session_id,
+            CoreMessage::Status("No trackers in torrent; relying on DHT and PEX".to_string()),
+        ))
+        .ok();
+        Vec::new()
+    } else {
+        tx.send((
+            session_id,
+            CoreMessage::Status(format!("Announcing to {} tracker(s)", meta.trackers.len())),
+        ))
+        .ok();
+        let params = tracker::AnnounceParams {
+            info_hash: &meta.info_hash,
+            peer_id: &peer_id,
+            port: listen_port,
+            uploaded: 0,
+            downloaded: 0,
             left,
-            Some("started"),
-        )
-        .await
-    })?;
+            event: Some("started"),
+        };
+        match runtime.block_on(tracker::announce_all(&meta.trackers, &params, |_| {})) {
+            Ok(peers) => peers,
+            Err(e) => {
+                tx.send((
+                    session_id,
+                    CoreMessage::Status(format!(
+                        "Tracker announce failed ({e:#}); continuing with DHT and PEX"
+                    )),
+                ))
+                .ok();
+                Vec::new()
+            }
+        }
+    };
 
     for peer in &peers {
         tx.send((session_id, CoreMessage::PeerFound(peer.addr)))
@@ -259,7 +361,7 @@ fn background_task(
     };
 
     let target_path = output_dir.join(&meta.name);
-    let mut is_valid = target_path.exists() || matches!(torrent_source, TorrentSource::Magnet(_));
+    let mut is_valid = target_path.exists();
     if is_valid && target_path.is_file() {
         if let Ok(metadata) = std::fs::metadata(&target_path) {
             if metadata.len() == 0 {
@@ -269,6 +371,7 @@ fn background_task(
     }
 
     let mut requires_check = false;
+    let mut start_paused = false;
 
     let manager = match runtime.block_on(load_fastresume(&resume_path)) {
         Ok(Some(state)) if is_valid => {
@@ -301,6 +404,7 @@ fn background_task(
             .ok(); // signal error state
                    // Pause the core right away to prevent re-downloading from scratch
             tx.send((session_id, CoreMessage::PausedState(true))).ok();
+            start_paused = true;
             mgr
         }
         Ok(None) => {
@@ -353,34 +457,15 @@ fn background_task(
                 {
                     Ok(disk_writer) => {
                         let disk_writer = Box::new(disk_writer) as Box<dyn AsyncDiskIO>;
-                        let mut state = if requires_check && !meta_pieces_c.is_empty() {
-                            coordinator::CoordinatorState::CheckingFiles {
-                                manager,
-                                disk_writer,
-                                expected_hashes: std::sync::Arc::new(meta_pieces_c),
-                                piece_length: meta_piece_length,
-                                total_length: total_size,
-                                next_piece: 0,
-                            }
-                        } else {
-                            coordinator::CoordinatorState::DownloadingData {
-                                manager,
-                                disk_writer,
-                                paused: false,
-                                has_completed: false,
-                            }
-                        };
-
-                        // If it's paused due to error, set state.paused = true
-                        if !is_valid {
-                            if let coordinator::CoordinatorState::DownloadingData {
-                                ref mut paused,
-                                ..
-                            } = state
-                            {
-                                *paused = true;
-                            }
-                        }
+                        let state = initial_coordinator_state(
+                            manager,
+                            disk_writer,
+                            requires_check,
+                            meta_pieces_c,
+                            meta_piece_length,
+                            total_size,
+                            start_paused,
+                        );
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
@@ -410,6 +495,7 @@ fn background_task(
         let meta_files = meta.files.clone();
         let meta_name = meta.name.clone();
         let meta_piece_length = meta.piece_length;
+        let meta_pieces_c = meta.pieces.clone();
 
         let ui_async_tx_c = ui_async_tx.clone();
         let shutdown_rx_c = shutdown_tx.subscribe();
@@ -428,12 +514,16 @@ fn background_task(
                 .await
                 {
                     Ok(disk_writer) => {
-                        let disk_writer = Box::new(disk_writer);
-                        let state = coordinator::CoordinatorState::DownloadingData {
+                        let disk_writer = Box::new(disk_writer) as Box<dyn AsyncDiskIO>;
+                        let state = initial_coordinator_state(
                             manager,
                             disk_writer,
-                            paused: false,
-                        };
+                            requires_check,
+                            meta_pieces_c,
+                            meta_piece_length,
+                            total_size,
+                            start_paused,
+                        );
                         coordinator::run_coordinator(
                             coord_rx,
                             ui_async_tx_c,
@@ -465,13 +555,14 @@ fn background_task(
 
     let info_hash = meta.info_hash;
     let swarm_peer_id = peer_id;
+    let tracker_urls = meta.trackers.clone();
 
     let shutdown_tx_for_swarm = shutdown_tx.clone();
     let coord_tx_for_cmd = coord_tx.clone();
     runtime.spawn(async move {
         swarm::run_swarm_manager(
             available_peers,
-            tracker_url,
+            tracker_urls,
             info_hash,
             swarm_peer_id,
             listen_port,

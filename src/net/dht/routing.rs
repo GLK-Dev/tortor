@@ -118,6 +118,18 @@ impl RoutingTable {
         }
     }
 
+    /// Up to `count` known contacts closest to `target` by XOR distance.
+    pub fn closest(&self, target: &NodeId, count: usize) -> Vec<Contact> {
+        let mut all: Vec<Contact> = self
+            .buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes.iter().cloned())
+            .collect();
+        all.sort_by_key(|contact| contact.id.xor(target));
+        all.truncate(count);
+        all
+    }
+
     fn bucket_index(&self, target: &NodeId) -> usize {
         let distance = self.local_id.xor(target);
         let zeros = distance.leading_zeros();

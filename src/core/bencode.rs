@@ -62,7 +62,10 @@ impl From<serde_bencode::Error> for TorrentParseError {
 
 #[derive(Debug, Deserialize)]
 struct RawTorrent {
+    #[serde(default)]
     announce: String,
+    #[serde(default, rename = "announce-list")]
+    announce_list: Vec<Vec<String>>,
     info: RawInfo,
 }
 
@@ -260,7 +263,8 @@ pub fn parse_torrent_bytes(bytes: &[u8]) -> Result<TorrentMeta, TorrentParseErro
     let info_slice = extract_info_dictionary_slice(bytes)?;
     let info_hash = crate::crypto::core::hash_sha1(info_slice);
 
-    build_meta(raw.announce, raw.info, info_hash)
+    let extra: Vec<String> = raw.announce_list.into_iter().flatten().collect();
+    Ok(build_meta(raw.announce, raw.info, info_hash)?.with_extra_trackers(extra))
 }
 
 pub fn parse_torrent_file(path: impl AsRef<Path>) -> Result<TorrentMeta, TorrentParseError> {
@@ -291,7 +295,7 @@ fn extract_info_dictionary_slice(bytes: &[u8]) -> Result<&[u8], TorrentParseErro
         index = next_index;
 
         let value_start = index;
-        let value_end = skip_bencode_value(bytes, index)?;
+        let value_end = skip_bencode_value(bytes, index, 0)?;
 
         if key == b"info" {
             return Ok(&bytes[value_start..value_end]);
@@ -344,7 +348,22 @@ fn parse_byte_string(bytes: &[u8], start: usize) -> Result<(&[u8], usize), Torre
     Ok((&bytes[content_start..content_end], content_end))
 }
 
-fn skip_bencode_value(bytes: &[u8], start: usize) -> Result<usize, TorrentParseError> {
+/// Length in bytes of the bencoded value at the start of `bytes`; anything
+/// after it (e.g. the raw data following a ut_metadata header) is ignored.
+pub fn bencode_value_len(bytes: &[u8]) -> Result<usize, TorrentParseError> {
+    skip_bencode_value(bytes, 0, 0)
+}
+
+fn skip_bencode_value(
+    bytes: &[u8],
+    start: usize,
+    depth: usize,
+) -> Result<usize, TorrentParseError> {
+    if depth > MAX_BENCODE_DEPTH {
+        return Err(TorrentParseError::InvalidBencode(
+            "bencode nesting is too deep",
+        ));
+    }
     if start >= bytes.len() {
         return Err(TorrentParseError::InvalidBencode(
             "unexpected end of input while reading value",
@@ -367,7 +386,7 @@ fn skip_bencode_value(bytes: &[u8], start: usize) -> Result<usize, TorrentParseE
         b'l' => {
             let mut index = start + 1;
             while index < bytes.len() && bytes[index] != b'e' {
-                index = skip_bencode_value(bytes, index)?;
+                index = skip_bencode_value(bytes, index, depth + 1)?;
             }
             if index >= bytes.len() {
                 return Err(TorrentParseError::InvalidBencode("unterminated list value"));
@@ -378,7 +397,7 @@ fn skip_bencode_value(bytes: &[u8], start: usize) -> Result<usize, TorrentParseE
             let mut index = start + 1;
             while index < bytes.len() && bytes[index] != b'e' {
                 let (_, key_end) = parse_byte_string(bytes, index)?;
-                index = skip_bencode_value(bytes, key_end)?;
+                index = skip_bencode_value(bytes, key_end, depth + 1)?;
             }
             if index >= bytes.len() {
                 return Err(TorrentParseError::InvalidBencode(
@@ -467,6 +486,35 @@ mod tests {
             parse_torrent_bytes(&torrent_with_info(info)),
             Err(TorrentParseError::InvalidTorrent(_))
         ));
+    }
+
+    #[test]
+    fn value_len_ignores_trailing_data() {
+        assert_eq!(bencode_value_len(b"d1:ai1eeRAWDATA").unwrap(), 8);
+        assert_eq!(bencode_value_len(b"i42e").unwrap(), 4);
+        assert!(bencode_value_len(b"d1:a").is_err());
+        let deep = vec![b'l'; 1000];
+        assert!(bencode_value_len(&deep).is_err());
+    }
+
+    #[test]
+    fn collects_trackers_from_announce_list() {
+        let info = b"d6:lengthi5e4:name1:a12:piece lengthi16384e6:pieces20:12345678901234567890e";
+        let mut bytes = b"d8:announce15:http://a.test/x13:announce-listll15:http://a.test/xel14:udp://b.test:1el9:ftp://badee4:info".to_vec();
+        bytes.extend_from_slice(info);
+        bytes.push(b'e');
+        let meta = parse_torrent_bytes(&bytes).unwrap();
+        assert_eq!(meta.trackers, vec!["http://a.test/x", "udp://b.test:1"]);
+    }
+
+    #[test]
+    fn trackerless_torrent_is_accepted() {
+        let info = b"d6:lengthi5e4:name1:a12:piece lengthi16384e6:pieces20:12345678901234567890e";
+        let mut bytes = b"d4:info".to_vec();
+        bytes.extend_from_slice(info);
+        bytes.push(b'e');
+        let meta = parse_torrent_bytes(&bytes).unwrap();
+        assert!(meta.trackers.is_empty());
     }
 
     #[test]

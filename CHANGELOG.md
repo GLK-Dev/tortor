@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Network / Сеть
+- **Piece picking:** per-peer bitfields, rarest-first selection and endgame mode; pieces are only requested from peers that have them. Fixes stalls at 99.9 %.
+- **Peer sessions:** one long-lived session per connection that downloads, uploads (seeding), sends keep-alives and drops silent/useless peers; at most 8 upload slots per torrent. Inbound TCP and QUIC connections are accepted.
+- **Magnet links (BEP 9/10):** info hash parsing (hex/base32, `dn`, `tr`), metadata download from trackers and DHT with SHA-1 verification.
+- **Trackers:** `announce-list` (BEP 12), non-compact peer lists, `peers6`, IPv6 UDP trackers, retries, real `uploaded`/`downloaded`/`left`; peers are used as soon as the first tracker answers. Torrents without trackers work through DHT/PEX.
+- **DHT:** answers ping, find_node, get_peers and announce_peer (with tokens), announces itself for active torrents, validates the reply source, expires pending queries, sorted bencode keys, more bootstrap routers.
+- **Fixed:** fresh torrents no longer start paused; completed pieces are no longer re-downloaded after a file check; resume state is saved at most every 5 s.
+
 ### Security / Безопасность
 - **Wire protocol:** peer messages are decoded by a buffered, cancel-safe `MessageDecoder` with a 1 MiB message cap; unknown message ids are skipped instead of dropping the peer. REQUEST messages are validated (length ≤ 32 KiB, within the piece).
 - **Torrent parsing:** path components are sanitized (no `..`, separators, NUL, Windows reserved names), piece length / size / piece count are validated, bencode nesting depth and .torrent / metadata / tracker response sizes are limited.

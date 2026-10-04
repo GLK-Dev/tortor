@@ -1,5 +1,6 @@
 pub mod assembler;
 pub mod bencode;
+pub mod bitfield;
 pub mod command;
 pub mod coordinator;
 pub mod disk;

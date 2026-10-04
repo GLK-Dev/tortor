@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use crate::net::dht::krpc::KrpcMessage;
+use crate::net::dht::krpc::{KrpcMessage, QueryArgs};
 use crate::net::dht::routing::{Contact, NodeId};
 use crate::net::dht::server::DhtCommand;
 use crate::net::swarm::SwarmEvent;
@@ -19,6 +19,8 @@ pub enum NodeState {
 pub struct SearchContact {
     pub contact: Contact,
     pub state: NodeState,
+    /// Write token from the node's get_peers reply, needed for announce_peer.
+    pub token: Vec<u8>,
 }
 
 pub struct DhtSearch {
@@ -28,6 +30,7 @@ pub struct DhtSearch {
     pub cmd_tx: mpsc::Sender<DhtCommand>,
     pub manager_tx: mpsc::Sender<crate::net::dht::actor::DhtManagerCommand>,
     pub swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
+    pub announce_port: Option<u16>,
 }
 
 impl DhtSearch {
@@ -38,12 +41,14 @@ impl DhtSearch {
         cmd_tx: mpsc::Sender<DhtCommand>,
         swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
         manager_tx: mpsc::Sender<crate::net::dht::actor::DhtManagerCommand>,
+        announce_port: Option<u16>,
     ) -> Self {
         let mut short_list: Vec<SearchContact> = initial_nodes
             .into_iter()
             .map(|contact| SearchContact {
                 contact,
                 state: NodeState::Unqueried,
+                token: Vec::new(),
             })
             .collect();
 
@@ -56,6 +61,7 @@ impl DhtSearch {
             cmd_tx,
             swarm_tx,
             manager_tx,
+            announce_port,
         }
     }
 
@@ -99,7 +105,7 @@ impl DhtSearch {
                     {
                         let timeout_future =
                             tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx);
-                        in_flight.spawn(async move { (target_contact.id, timeout_future.await) });
+                        in_flight.spawn(async move { (target_addr, timeout_future.await) });
                     }
                 } else {
                     break;
@@ -111,20 +117,22 @@ impl DhtSearch {
                     "DHT Search for {:?} complete (no more in-flight or unqueried nodes).",
                     self.info_hash
                 );
+                self.announce_to_closest().await;
                 break;
             }
 
-            if let Some(Ok((node_id, result))) = in_flight.join_next().await {
+            if let Some(Ok((node_addr, result))) = in_flight.join_next().await {
                 if let Some(sc) = self
                     .short_list
                     .iter_mut()
-                    .find(|sc| sc.contact.id == node_id)
+                    .find(|sc| sc.contact.addr == node_addr)
                 {
                     match result {
                         Ok(Ok(Ok(response))) => {
                             sc.state = NodeState::Queried;
 
                             if let Some(resp_args) = response.r {
+                                sc.token = resp_args.token.clone();
                                 if !resp_args.values.is_empty() {
                                     let mut peers = Vec::new();
                                     for peer_buf in resp_args.values {
@@ -164,6 +172,7 @@ impl DhtSearch {
                                                 self.short_list.push(SearchContact {
                                                     contact,
                                                     state: NodeState::Unqueried,
+                                                    token: Vec::new(),
                                                 });
                                             }
                                         }
@@ -181,5 +190,45 @@ impl DhtSearch {
                 }
             }
         }
+    }
+
+    /// Tells the closest nodes that gave us a token that we are a peer for this torrent.
+    async fn announce_to_closest(&self) {
+        let Some(port) = self.announce_port else {
+            return;
+        };
+
+        let mut announced = 0usize;
+        for sc in &self.short_list {
+            if announced >= 8 {
+                break;
+            }
+            if sc.state != NodeState::Queried || sc.token.is_empty() {
+                continue;
+            }
+
+            let mut args = QueryArgs::new(self.local_id.0.to_vec());
+            args.info_hash = self.info_hash.0.to_vec();
+            args.port = Some(port);
+            args.token = sc.token.clone();
+
+            // The answer is not needed, so the receiving half is dropped right away.
+            let (reply_tx, _reply_rx) = oneshot::channel();
+            let sent = self
+                .cmd_tx
+                .send(DhtCommand::SendQuery {
+                    target: sc.contact.addr,
+                    msg: KrpcMessage::query(Vec::new(), "announce_peer", args),
+                    reply: reply_tx,
+                })
+                .await;
+            if sent.is_ok() {
+                announced += 1;
+            }
+        }
+        debug!(
+            "DHT announced to {announced} nodes for {:?}",
+            self.info_hash
+        );
     }
 }

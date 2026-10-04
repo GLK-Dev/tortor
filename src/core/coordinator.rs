@@ -4,14 +4,27 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
 use crate::core::bencode::parse_torrent_metadata_bytes;
+use crate::core::bitfield::Bitfield;
 use crate::core::command::CoreMessage;
 use crate::core::disk_io::AsyncDiskIO;
 use crate::core::manager::TorrentManager;
 use crate::core::metadata_assembler::MetadataAssembler;
 use crate::core::resume::{save_fastresume, FastResumeState};
 
+/// Progress is persisted at most this often while downloading.
+const RESUME_PERSIST_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
 pub enum CoordinatorMsg {
-    RequestWork(oneshot::Sender<Option<u32>>),
+    /// Asks for a piece the peer (described by `have`) can serve.
+    RequestWork {
+        have: Bitfield,
+        reply: oneshot::Sender<Option<u32>>,
+    },
+    /// A peer announced pieces (BITFIELD); counted for rarest-first.
+    PeerBitfield(Bitfield),
+    PeerHave(u32),
+    /// A peer disconnected; its pieces no longer count as available.
+    PeerGone(Bitfield),
     PieceDownloaded(u32, Vec<u8>),
     PieceFailed(u32),
     GetCompletedPieces(oneshot::Sender<Vec<u32>>),
@@ -51,6 +64,16 @@ pub enum CoordinatorState {
     },
 }
 
+impl CoordinatorState {
+    fn manager_mut(&mut self) -> Option<&mut TorrentManager> {
+        match self {
+            CoordinatorState::CheckingFiles { manager, .. }
+            | CoordinatorState::DownloadingData { manager, .. } => Some(manager),
+            CoordinatorState::DownloadingMetadata { .. } => None,
+        }
+    }
+}
+
 struct DummyDisk;
 #[async_trait::async_trait(?Send)]
 impl AsyncDiskIO for DummyDisk {
@@ -78,6 +101,7 @@ pub async fn run_coordinator(
     info!("Coordinator task started");
 
     let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(1));
+    let mut last_persist = tokio::time::Instant::now();
 
     loop {
         let msg = tokio::select! {
@@ -137,6 +161,8 @@ pub async fn run_coordinator(
                         if has_completed {
                             info!("torrent download complete (from local files), entering seeding mode");
                             let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                            let _ = announce_tx
+                                .send(crate::core::command::SessionEvent::DownloadComplete);
                         }
                         let _ = ui_sender.send(CoreMessage::Status("File check complete".to_string())).await;
                         state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed };
@@ -151,7 +177,7 @@ pub async fn run_coordinator(
         };
 
         match msg {
-            CoordinatorMsg::RequestWork(reply) => {
+            CoordinatorMsg::RequestWork { have, reply } => {
                 if let CoordinatorState::DownloadingData {
                     manager, paused, ..
                 } = &mut state
@@ -159,11 +185,26 @@ pub async fn run_coordinator(
                     if *paused {
                         let _ = reply.send(None);
                     } else {
-                        let work = manager.get_next_work();
+                        let work = manager.next_work_for(&have);
                         let _ = reply.send(work);
                     }
                 } else {
                     let _ = reply.send(None);
+                }
+            }
+            CoordinatorMsg::PeerBitfield(pieces) => {
+                if let Some(manager) = state.manager_mut() {
+                    manager.add_peer_pieces(&pieces);
+                }
+            }
+            CoordinatorMsg::PeerHave(index) => {
+                if let Some(manager) = state.manager_mut() {
+                    manager.add_peer_piece(index);
+                }
+            }
+            CoordinatorMsg::PeerGone(pieces) => {
+                if let Some(manager) = state.manager_mut() {
+                    manager.remove_peer_pieces(&pieces);
                 }
             }
             CoordinatorMsg::PieceDownloaded(index, data) => {
@@ -174,6 +215,10 @@ pub async fn run_coordinator(
                     ..
                 } = &mut state
                 {
+                    if manager.is_completed(index) {
+                        continue;
+                    }
+
                     if let Err(err) = disk_writer.write_piece(index, data).await {
                         error!("disk write failed for piece {}: {}", index, err);
                         manager.return_work(index);
@@ -186,13 +231,18 @@ pub async fn run_coordinator(
                     let progress = manager.progress();
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 
-                    if let Err(err) = persist_resume(&resume_path, manager).await {
-                        error!("failed to persist fastresume: {}", err);
+                    if manager.is_done() || last_persist.elapsed() >= RESUME_PERSIST_INTERVAL {
+                        if let Err(err) = persist_resume(&resume_path, manager).await {
+                            error!("failed to persist fastresume: {}", err);
+                        }
+                        last_persist = tokio::time::Instant::now();
                     }
 
                     if manager.is_done() && !*has_completed {
                         info!("torrent download complete, entering seeding mode");
                         let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                        let _ =
+                            announce_tx.send(crate::core::command::SessionEvent::DownloadComplete);
                         *has_completed = true;
                     }
                 }
