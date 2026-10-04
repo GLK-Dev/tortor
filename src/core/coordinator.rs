@@ -126,11 +126,13 @@ pub async fn run_coordinator(
                         };
 
                         if let Ok(data) = disk_writer.read_piece(index, 0, length).await {
-                            use sha1::{Sha1, Digest};
-                            let mut hasher = Sha1::new();
-                            hasher.update(&data);
-                            let hash = hasher.finalize();
-                            if hash.as_slice() == expected_hashes[index as usize].as_slice() {
+                            let expected = expected_hashes[index as usize];
+                            let verified = tokio::task::spawn_blocking(move || {
+                                crate::crypto::core::hash_sha1(&data) == expected
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if verified {
                                 manager.mark_completed(index);
                                 let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
                             }
@@ -232,7 +234,10 @@ pub async fn run_coordinator(
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 
                     if manager.is_done() || last_persist.elapsed() >= RESUME_PERSIST_INTERVAL {
-                        if let Err(err) = persist_resume(&resume_path, manager).await {
+                        // Progress may only be recorded once the data is on disk.
+                        if let Err(err) = disk_writer.flush().await {
+                            error!("failed to flush piece data: {}", err);
+                        } else if let Err(err) = persist_resume(&resume_path, manager).await {
                             error!("failed to persist fastresume: {}", err);
                         }
                         last_persist = tokio::time::Instant::now();
@@ -413,8 +418,15 @@ pub async fn run_coordinator(
         }
     }
 
-    if let CoordinatorState::DownloadingData { manager, .. } = &state {
-        if let Err(err) = persist_resume(&resume_path, manager).await {
+    if let CoordinatorState::DownloadingData {
+        manager,
+        disk_writer,
+        ..
+    } = &mut state
+    {
+        if let Err(err) = disk_writer.flush().await {
+            error!("failed to flush piece data: {}", err);
+        } else if let Err(err) = persist_resume(&resume_path, manager).await {
             error!("failed to persist final fastresume: {}", err);
         }
     }

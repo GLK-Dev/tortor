@@ -14,7 +14,7 @@ use tortor::core::coordinator::{run_coordinator, CoordinatorMsg, CoordinatorStat
 use tortor::core::disk::StandardDisk;
 use tortor::core::disk_io::AsyncDiskIO;
 use tortor::core::manager::TorrentManager;
-use tortor::core::peer_id::generate_peer_id;
+use tortor::net::engine::{Engine, EngineOptions};
 use tortor::net::metadata::{fetch_metadata, FetchOptions};
 use tortor::net::{magnet, swarm};
 
@@ -32,8 +32,12 @@ async fn main() -> anyhow::Result<()> {
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(60);
 
     let magnet = magnet::parse(&uri)?;
-    let peer_id = generate_peer_id();
-    let port = 6881;
+    let engine = Engine::start(EngineOptions {
+        listen_port: 6881,
+        enable_dht: true,
+    })
+    .await?;
+    let (peer_id, port) = (engine.peer_id, engine.port);
 
     let bytes = fetch_metadata(
         FetchOptions {
@@ -107,8 +111,6 @@ async fn main() -> anyhow::Result<()> {
         Default::default(),
         meta.trackers.clone(),
         meta.info_hash,
-        peer_id,
-        port,
         total,
         hashes,
         meta.piece_length,
@@ -117,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         coord_tx,
         shutdown_tx.clone(),
         announce_tx,
+        engine.clone(),
     ));
 
     let started = Instant::now();
@@ -153,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let _ = shutdown_tx.send(());
+    engine.shutdown();
     let _ = tokio::time::timeout(Duration::from_secs(5), swarm_task).await;
     let _ = coordinator.join();
     println!(

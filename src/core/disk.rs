@@ -10,6 +10,8 @@ pub struct FileMapping {
     pub file: File,
     pub start_offset: u64,
     pub end_offset: u64,
+    /// Written since the last `flush`.
+    dirty: bool,
 }
 
 pub struct StandardDisk {
@@ -80,6 +82,7 @@ impl StandardDisk {
                 file: File::from_std(std_file),
                 start_offset,
                 end_offset,
+                dirty: false,
             })
             .collect();
 
@@ -90,8 +93,23 @@ impl StandardDisk {
     }
 }
 
+/// Finds the file that contains the absolute byte `offset`. Files are laid out
+/// back to back, so the lookup is a binary search; zero-length files never match.
+fn locate(files: &mut [FileMapping], offset: u64) -> Option<&mut FileMapping> {
+    let idx = files.partition_point(|m| m.end_offset <= offset);
+    files.get_mut(idx).filter(|m| m.start_offset <= offset)
+}
+
 #[async_trait(?Send)]
 impl AsyncDiskIO for StandardDisk {
+    async fn flush(&mut self) -> Result<()> {
+        for mapping in self.files.iter_mut().filter(|m| m.dirty) {
+            mapping.file.sync_data().await?;
+            mapping.dirty = false;
+        }
+        Ok(())
+    }
+
     async fn write_piece(&mut self, piece_index: u32, data: Vec<u8>) -> Result<()> {
         let piece_offset = (piece_index as u64) * (self.piece_length as u64);
         let mut written = 0;
@@ -99,11 +117,7 @@ impl AsyncDiskIO for StandardDisk {
         while written < data.len() {
             let current_abs_offset = piece_offset + written as u64;
 
-            if let Some(mapping) = self
-                .files
-                .iter_mut()
-                .find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset)
-            {
+            if let Some(mapping) = locate(&mut self.files, current_abs_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
@@ -113,7 +127,7 @@ impl AsyncDiskIO for StandardDisk {
                     .file
                     .write_all(&data[written..written + to_write])
                     .await?;
-                mapping.file.sync_data().await?;
+                mapping.dirty = true;
 
                 written += to_write;
             } else {
@@ -134,11 +148,7 @@ impl AsyncDiskIO for StandardDisk {
         while read < len as usize {
             let current_abs_offset = absolute_offset + read as u64;
 
-            if let Some(mapping) = self
-                .files
-                .iter_mut()
-                .find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset)
-            {
+            if let Some(mapping) = locate(&mut self.files, current_abs_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
@@ -156,5 +166,66 @@ impl AsyncDiskIO for StandardDisk {
         }
 
         Ok(buffer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::torrent::TorrentFile;
+
+    #[tokio::test]
+    async fn pieces_span_files_and_survive_flush() {
+        let dir = std::env::temp_dir().join(format!("tortor-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Files of 10, 0, 25 and 5 bytes; pieces of 16 bytes cross every boundary.
+        let files = vec![
+            TorrentFile {
+                length: 10,
+                path: vec!["a.bin".into()],
+            },
+            TorrentFile {
+                length: 0,
+                path: vec!["empty.bin".into()],
+            },
+            TorrentFile {
+                length: 25,
+                path: vec!["sub".into(), "b.bin".into()],
+            },
+            TorrentFile {
+                length: 5,
+                path: vec!["c.bin".into()],
+            },
+        ];
+        let data: Vec<u8> = (0..40u8).collect();
+        let mut disk = StandardDisk::init(&dir, 40, 16, Some(&files), "t")
+            .await
+            .unwrap();
+
+        disk.write_piece(0, data[0..16].to_vec()).await.unwrap();
+        disk.write_piece(1, data[16..32].to_vec()).await.unwrap();
+        disk.write_piece(2, data[32..40].to_vec()).await.unwrap();
+        disk.flush().await.unwrap();
+
+        assert_eq!(disk.read_piece(0, 0, 16).await.unwrap(), data[0..16]);
+        assert_eq!(disk.read_piece(1, 4, 12).await.unwrap(), data[20..32]);
+        assert_eq!(disk.read_piece(2, 0, 8).await.unwrap(), data[32..40]);
+        assert!(disk.read_piece(3, 0, 1).await.is_err());
+
+        assert_eq!(
+            std::fs::read(dir.join("t").join("a.bin")).unwrap(),
+            data[0..10]
+        );
+        assert_eq!(
+            std::fs::read(dir.join("t").join("sub").join("b.bin")).unwrap(),
+            data[10..35]
+        );
+        assert_eq!(
+            std::fs::read(dir.join("t").join("c.bin")).unwrap(),
+            data[35..40]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

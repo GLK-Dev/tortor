@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (swarm_tx, mut swarm_rx) = mpsc::unbounded_channel::<SwarmEvent>();
 
-    let (dht_manager, dht_cmd_tx) = DhtManager::new(0, swarm_tx).await?;
+    let (dht_manager, dht_cmd_tx) = DhtManager::new(0).await?;
     tokio::spawn(dht_manager.run());
 
     // Wait for bootstrap ping to finish (giving it a bit of time)
@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .send(DhtManagerCommand::StartSearch {
             info_hash,
             announce_port: None,
+            peers_tx: swarm_tx,
         })
         .await?;
 

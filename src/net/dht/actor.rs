@@ -30,6 +30,8 @@ pub enum DhtManagerCommand {
     StartSearch {
         info_hash: NodeId,
         announce_port: Option<u16>,
+        /// Receives `DhtPeersReceived` events for this search.
+        peers_tx: mpsc::UnboundedSender<SwarmEvent>,
     },
     InsertNode(Contact),
 }
@@ -127,7 +129,6 @@ pub struct DhtManager {
     cmd_tx: mpsc::Sender<DhtManagerCommand>,
     server_cmd_tx: mpsc::Sender<DhtCommand>,
     incoming_rx: mpsc::Receiver<(SocketAddr, KrpcMessage)>,
-    swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
     peer_store: PeerStore,
     tokens: Tokens,
 }
@@ -163,10 +164,7 @@ fn encode_value(addr: &SocketAddr) -> Option<serde_bytes::ByteBuf> {
 }
 
 impl DhtManager {
-    pub async fn new(
-        port: u16,
-        swarm_tx: mpsc::UnboundedSender<SwarmEvent>,
-    ) -> anyhow::Result<(Self, mpsc::Sender<DhtManagerCommand>)> {
+    pub async fn new(port: u16) -> anyhow::Result<(Self, mpsc::Sender<DhtManagerCommand>)> {
         let local_id = NodeId(rand::random());
 
         let (incoming_tx, incoming_rx) = mpsc::channel(256);
@@ -196,7 +194,6 @@ impl DhtManager {
             cmd_tx: cmd_tx.clone(),
             server_cmd_tx,
             incoming_rx,
-            swarm_tx,
             peer_store: PeerStore::default(),
             tokens: Tokens::new(),
         };
@@ -211,14 +208,14 @@ impl DhtManager {
         loop {
             tokio::select! {
                 cmd = self.cmd_rx.recv() => match cmd {
-                    Some(DhtManagerCommand::StartSearch { info_hash, announce_port }) => {
+                    Some(DhtManagerCommand::StartSearch { info_hash, announce_port, peers_tx }) => {
                         info!("DhtManager starting recursive search for {:?}", info_hash);
                         let search = DhtSearch::new(
                             info_hash,
                             self.local_id,
                             self.routing_table.closest(&info_hash, K),
                             self.server_cmd_tx.clone(),
-                            self.swarm_tx.clone(),
+                            peers_tx,
                             self.cmd_tx.clone(),
                             announce_port,
                         );
@@ -355,9 +352,8 @@ mod tests {
     use super::*;
 
     async fn manager() -> DhtManager {
-        let (tx, _rx) = mpsc::unbounded_channel();
         // Port 0 picks a free UDP port; bootstrap lookups may fail offline, which is fine.
-        let (manager, _cmd) = DhtManager::new(0, tx).await.unwrap();
+        let (manager, _cmd) = DhtManager::new(0).await.unwrap();
         manager
     }
 

@@ -1,6 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tortor::crypto::core;
-use tortor::crypto::dispatch::{self, HashAlgorithm};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use tortor::crypto::dispatch::{hash_piece, HashAlgorithm};
 
 fn hash_bench(c: &mut Criterion) {
     let mut payload = vec![0u8; 256 * 1024];
@@ -9,21 +8,14 @@ fn hash_bench(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("piece_hash_256kb");
+    group.throughput(Throughput::Bytes(payload.len() as u64));
 
-    group.bench_function("dispatch_sha1", |b| {
-        b.iter(|| dispatch::hash_piece(black_box(&payload), HashAlgorithm::Sha1));
+    group.bench_function("sha1", |b| {
+        b.iter(|| hash_piece(black_box(&payload), HashAlgorithm::Sha1));
     });
 
-    group.bench_function("portable_sha1", |b| {
-        b.iter(|| core::hash_sha1(black_box(&payload)));
-    });
-
-    group.bench_function("dispatch_sha256", |b| {
-        b.iter(|| dispatch::hash_piece(black_box(&payload), HashAlgorithm::Sha256));
-    });
-
-    group.bench_function("portable_sha256", |b| {
-        b.iter(|| core::hash_sha256(black_box(&payload)));
+    group.bench_function("sha256", |b| {
+        b.iter(|| hash_piece(black_box(&payload), HashAlgorithm::Sha256));
     });
 
     group.finish();

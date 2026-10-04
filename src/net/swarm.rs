@@ -4,14 +4,14 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{broadcast, mpsc, Semaphore};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::core::command::CoreMessage;
 use crate::core::coordinator::CoordinatorMsg;
-use crate::net::inbound;
+use crate::net::engine::{Engine, TorrentRegistration};
 use crate::net::probe;
 use crate::net::session::{PeerContext, TransferStats, UploadSlots, MAX_UPLOAD_SLOTS};
 use crate::net::tracker;
@@ -20,7 +20,6 @@ const MAX_ACTIVE_PEERS: usize = 30;
 const SWARM_TICK_SECS: u64 = 5;
 /// Backstop only: sessions drop silent or useless peers on their own.
 const PEER_IDLE_TIMEOUT_SECS: u64 = 300;
-const MAX_INBOUND_PEERS: usize = 50;
 const MAX_QUEUED_PEERS: usize = 2000;
 const PEER_THRESHOLD: usize = 5;
 const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
@@ -53,12 +52,12 @@ struct SwarmState {
     stats: Arc<TransferStats>,
 }
 
+/// Runs the peer swarm of one torrent: dials peers from trackers, DHT and
+/// PEX, re-announces, and serves inbound peers the engine routes to it.
 pub async fn run_swarm_manager(
     mut available_peers: VecDeque<SocketAddr>,
     tracker_urls: Vec<String>,
     info_hash: [u8; 20],
-    peer_id: [u8; 20],
-    listen_port: u16,
     left_hint: u64,
     expected_hashes: Arc<Vec<[u8; 20]>>,
     piece_length: u32,
@@ -67,6 +66,7 @@ pub async fn run_swarm_manager(
     coord_sender: mpsc::Sender<CoordinatorMsg>,
     shutdown_tx: broadcast::Sender<()>,
     announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
+    engine: Arc<Engine>,
 ) {
     let mut active: HashMap<SocketAddr, ActivePeer> = HashMap::new();
     let mut tick = interval(Duration::from_secs(SWARM_TICK_SECS));
@@ -75,58 +75,8 @@ pub async fn run_swarm_manager(
     let mut announce_rx = announce_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
 
-    let (server_config, client_config) = match crate::crypto::tls::configure_quic() {
-        Ok(configs) => configs,
-        Err(err) => {
-            error!("Failed to configure QUIC: {err}");
-            let _ = ui_sender
-                .send(CoreMessage::Error(format!(
-                    "Failed to configure QUIC: {err}"
-                )))
-                .await;
-            return;
-        }
-    };
-
-    let mut current_port = listen_port;
-    let mut bound = None;
-
-    // TCP and QUIC (UDP) share the same port number; DHT uses the next one.
-    for _ in 0..100 {
-        let addr = SocketAddr::from(([0, 0, 0, 0], current_port));
-
-        let tcp = tokio::net::TcpListener::bind(addr).await;
-        let quic = quinn::Endpoint::server(server_config.clone(), addr);
-        match (tcp, quic) {
-            (Ok(tcp), Ok(quic)) => {
-                info!("TCP and QUIC listeners bound to {}", addr);
-                bound = Some((tcp, quic));
-                break;
-            }
-            (tcp, quic) => {
-                let reason = tcp
-                    .err()
-                    .map(|e| e.to_string())
-                    .or_else(|| quic.err().map(|e| e.to_string()))
-                    .unwrap_or_default();
-                warn!("Port {current_port} is busy ({reason}). Trying next...");
-                current_port = current_port.saturating_add(2);
-            }
-        }
-    }
-    let final_dht_port = current_port.saturating_add(1);
-
-    let Some((tcp_listener, mut quic_endpoint)) = bound else {
-        error!("No available port to bind the peer listeners");
-        let _ = ui_sender
-            .send(CoreMessage::Error(
-                "No available port to bind the peer listeners".to_string(),
-            ))
-            .await;
-        return;
-    };
-    quic_endpoint.set_default_client_config(client_config);
-    let quic_endpoint = Arc::new(quic_endpoint);
+    let peer_id = engine.peer_id;
+    let quic_endpoint = engine.quic_endpoint.clone();
 
     let peer_ctx = PeerContext {
         expected_hashes,
@@ -138,36 +88,21 @@ pub async fn run_swarm_manager(
         upload_slots: UploadSlots::new(MAX_UPLOAD_SLOTS),
         stats: Arc::new(TransferStats::default()),
     };
-    let inbound_limit = Arc::new(Semaphore::new(MAX_INBOUND_PEERS));
-
-    spawn_tcp_acceptor(
-        tcp_listener,
+    engine.register(
         info_hash,
-        peer_id,
-        peer_ctx.clone(),
-        inbound_limit.clone(),
-        shutdown_tx.clone(),
-        announce_tx.clone(),
-    );
-    spawn_quic_acceptor(
-        quic_endpoint.clone(),
-        info_hash,
-        peer_id,
-        peer_ctx.clone(),
-        inbound_limit,
-        shutdown_tx.clone(),
-        announce_tx.clone(),
+        TorrentRegistration {
+            ctx: peer_ctx.clone(),
+            shutdown_tx: shutdown_tx.clone(),
+            announce_tx: announce_tx.clone(),
+        },
     );
 
-    // Initialize DHT Manager safely using the adjacent free port
-    if let Ok((dht_manager, dht_cmd_tx)) =
-        crate::net::dht::actor::DhtManager::new(final_dht_port, event_tx.clone()).await
-    {
-        tokio::spawn(dht_manager.run());
-        let _ = dht_cmd_tx
+    if let Some(dht) = &engine.dht {
+        let _ = dht
             .send(crate::net::dht::actor::DhtManagerCommand::StartSearch {
                 info_hash: crate::net::dht::routing::NodeId(info_hash),
-                announce_port: Some(current_port),
+                announce_port: Some(engine.port),
+                peers_tx: event_tx.clone(),
             })
             .await;
     }
@@ -177,7 +112,7 @@ pub async fn run_swarm_manager(
         tracker_urls,
         info_hash,
         peer_id,
-        listen_port: current_port,
+        listen_port: engine.port,
         left_hint,
         event: Some("started".to_string()),
         stats: peer_ctx.stats.clone(),
@@ -383,7 +318,7 @@ pub async fn run_swarm_manager(
     for (_, peer) in active {
         peer.handle.abort();
     }
-    quic_endpoint.close(0u32.into(), b"shutdown");
+    engine.unregister(&info_hash);
 
     if !swarm_state.tracker_urls.is_empty() {
         tracing::info!("Graceful shutdown: Sending event=stopped tracker announce...");
@@ -493,86 +428,4 @@ fn enqueue_peers(
         added += 1;
     }
     added
-}
-
-fn spawn_tcp_acceptor(
-    listener: tokio::net::TcpListener,
-    info_hash: [u8; 20],
-    peer_id: [u8; 20],
-    ctx: PeerContext,
-    limit: Arc<Semaphore>,
-    shutdown_tx: broadcast::Sender<()>,
-    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
-) {
-    tokio::spawn(async move {
-        let mut stop = shutdown_tx.subscribe();
-        loop {
-            tokio::select! {
-                _ = stop.recv() => break,
-                accepted = listener.accept() => match accepted {
-                    Ok((socket, addr)) => {
-                        let Ok(permit) = limit.clone().try_acquire_owned() else {
-                            continue;
-                        };
-                        let ctx = ctx.clone();
-                        let shutdown_rx = shutdown_tx.subscribe();
-                        let announce_rx = announce_tx.subscribe();
-                        tokio::spawn(async move {
-                            let _permit = permit;
-                            if let Err(err) = inbound::serve_tcp(
-                                socket, addr, info_hash, peer_id, ctx, shutdown_rx, announce_rx,
-                            )
-                            .await
-                            {
-                                debug!("inbound TCP peer {addr} ended: {err}");
-                            }
-                        });
-                    }
-                    Err(err) => {
-                        warn!("failed to accept TCP peer: {err}");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                },
-            }
-        }
-    });
-}
-
-fn spawn_quic_acceptor(
-    endpoint: Arc<quinn::Endpoint>,
-    info_hash: [u8; 20],
-    peer_id: [u8; 20],
-    ctx: PeerContext,
-    limit: Arc<Semaphore>,
-    shutdown_tx: broadcast::Sender<()>,
-    announce_tx: broadcast::Sender<crate::core::command::SessionEvent>,
-) {
-    tokio::spawn(async move {
-        let mut stop = shutdown_tx.subscribe();
-        loop {
-            tokio::select! {
-                _ = stop.recv() => break,
-                incoming = endpoint.accept() => {
-                    let Some(incoming) = incoming else { break };
-                    let Ok(permit) = limit.clone().try_acquire_owned() else {
-                        incoming.refuse();
-                        continue;
-                    };
-                    let ctx = ctx.clone();
-                    let shutdown_rx = shutdown_tx.subscribe();
-                    let announce_rx = announce_tx.subscribe();
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        if let Err(err) = inbound::serve_quic(
-                            incoming, info_hash, peer_id, ctx, shutdown_rx, announce_rx,
-                        )
-                        .await
-                        {
-                            debug!("inbound QUIC peer ended: {err}");
-                        }
-                    });
-                }
-            }
-        }
-    });
 }

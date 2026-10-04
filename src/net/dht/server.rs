@@ -13,6 +13,11 @@ const TRANSACTION_TTL: Duration = Duration::from_secs(20);
 const MAX_PENDING: usize = 4096;
 const RECV_BUFFER: usize = 4096;
 
+/// Rejects addresses no real node can have (port 0, 0.0.0.0, multicast).
+pub fn is_valid_node_addr(addr: &SocketAddr) -> bool {
+    addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()
+}
+
 pub enum DhtCommand {
     SendQuery {
         target: SocketAddr,
@@ -71,6 +76,10 @@ impl DhtServer {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(DhtCommand::SendQuery { target, mut msg, reply }) => {
+                            if !is_valid_node_addr(&target) {
+                                let _ = reply.send(Err(anyhow::anyhow!("invalid DHT node address {target}")));
+                                continue;
+                            }
                             if self.transactions.len() >= MAX_PENDING {
                                 let _ = reply.send(Err(anyhow::anyhow!("too many pending DHT queries")));
                                 continue;

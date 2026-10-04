@@ -157,7 +157,11 @@ impl DhtSearch {
                                         id.copy_from_slice(&chunk[0..20]);
                                         let addrs_part =
                                             crate::net::pex::decode_compact_ipv4(&chunk[20..26]);
-                                        if let Some(addr) = addrs_part.into_iter().next() {
+                                        if let Some(addr) = addrs_part
+                                            .into_iter()
+                                            .next()
+                                            .filter(crate::net::dht::server::is_valid_node_addr)
+                                        {
                                             let contact = Contact {
                                                 id: NodeId(id),
                                                 addr,

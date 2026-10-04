@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
 use tokio::sync::{broadcast, mpsc as tokio_mpsc};
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
@@ -17,10 +17,10 @@ use crate::core::disk_io::AsyncDiskIO;
 #[cfg(target_os = "linux")]
 use crate::core::disk_uring::UringDisk;
 use crate::core::manager::TorrentManager;
-use crate::core::peer_id::generate_peer_id;
 use crate::core::resume::load_fastresume;
 use crate::core::session_store::TorrentSource;
 use crate::core::torrent::TorrentMeta;
+use crate::net::engine::{Engine, EngineOptions};
 use crate::net::swarm;
 use crate::net::tracker;
 
@@ -69,11 +69,24 @@ pub fn run_dashboard(
             }));
     }
 
+    // One runtime and one network engine (listeners, DHT) serve every torrent.
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?,
+    );
+    let engine = runtime.block_on(Engine::start(EngineOptions {
+        listen_port,
+        enable_dht: true,
+    }))?;
+
+    let app_engine = engine.clone();
+    let app_runtime = runtime.clone();
     eframe::run_native(
         "TorTor Download Manager",
         native_options,
         Box::new(move |_| {
-            let mut app = TorTorApp::new(listen_port);
+            let mut app = TorTorApp::new(app_engine, app_runtime);
 
             // Resume saved sessions
             let entries = app.session_store.entries.clone();
@@ -93,7 +106,16 @@ pub fn run_dashboard(
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
 
+    engine.shutdown();
     Ok(())
+}
+
+struct DoneOnDrop(mpsc::Sender<()>);
+
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
 }
 
 fn initial_coordinator_state(
@@ -129,9 +151,11 @@ fn background_task(
     tx: mpsc::Sender<(usize, CoreMessage)>,
     command_rx: Receiver<CoreCommand>,
     torrent_source: TorrentSource,
-    listen_port: u16,
+    engine: Arc<Engine>,
+    runtime: tokio::runtime::Handle,
     output_dir: PathBuf,
 ) -> Result<()> {
+    let listen_port = engine.port;
     let magnet = match &torrent_source {
         TorrentSource::Magnet(uri) => match crate::net::magnet::parse(uri) {
             Ok(magnet) => Some(magnet),
@@ -176,10 +200,6 @@ fn background_task(
     tx.send((session_id, CoreMessage::TorrentLoaded(meta.clone())))
         .ok();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
     tx.send((
         session_id,
         CoreMessage::Status(
@@ -208,7 +228,7 @@ fn background_task(
         return Ok(());
     }
 
-    let peer_id = generate_peer_id();
+    let peer_id = engine.peer_id;
 
     if meta.pieces.is_empty() {
         // Magnet link: fetch the info dictionary from the swarm first.
@@ -353,7 +373,9 @@ fn background_task(
         .total_length
         .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
 
-    let resume_path = match &torrent_source {
+    let resume_path = crate::core::fsutil::resume_file(&meta.info_hash);
+    // Older versions kept the resume file next to the torrent or the download.
+    let legacy_resume_path = match &torrent_source {
         TorrentSource::File(path) => path.with_extension("fastresume"),
         TorrentSource::Magnet(_) => {
             output_dir.join(format!("{}.fastresume", hex::encode(meta.info_hash)))
@@ -373,7 +395,11 @@ fn background_task(
     let mut requires_check = false;
     let mut start_paused = false;
 
-    let manager = match runtime.block_on(load_fastresume(&resume_path)) {
+    let loaded_resume = match runtime.block_on(load_fastresume(&resume_path)) {
+        Ok(None) => runtime.block_on(load_fastresume(&legacy_resume_path)),
+        other => other,
+    };
+    let manager = match loaded_resume {
         Ok(Some(state)) if is_valid => {
             let mgr = state.clone().into_manager(meta.pieces_count);
             tx.send((
@@ -426,6 +452,8 @@ fn background_task(
         }
     };
     let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
+    // Signalled when the coordinator thread ends, i.e. after its final flush.
+    let (coord_done_tx, coord_done_rx) = mpsc::channel::<()>();
 
     #[cfg(not(target_os = "linux"))]
     {
@@ -441,6 +469,7 @@ fn background_task(
         let resume_path_c = resume_path.clone();
 
         std::thread::spawn(move || {
+            let _done = DoneOnDrop(coord_done_tx);
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -503,6 +532,7 @@ fn background_task(
         let resume_path_c = resume_path.clone();
 
         std::thread::spawn(move || {
+            let _done = DoneOnDrop(coord_done_tx);
             tokio_uring::start(async move {
                 match UringDisk::init(
                     &output_dir_c,
@@ -554,8 +584,8 @@ fn background_task(
         peers.iter().map(|p| p.addr).collect();
 
     let info_hash = meta.info_hash;
-    let swarm_peer_id = peer_id;
     let tracker_urls = meta.trackers.clone();
+    let swarm_engine = engine.clone();
 
     let shutdown_tx_for_swarm = shutdown_tx.clone();
     let coord_tx_for_cmd = coord_tx.clone();
@@ -564,8 +594,6 @@ fn background_task(
             available_peers,
             tracker_urls,
             info_hash,
-            swarm_peer_id,
-            listen_port,
             left,
             expected_hashes,
             piece_length,
@@ -574,6 +602,7 @@ fn background_task(
             coord_tx,
             shutdown_tx_for_swarm,
             announce_tx,
+            swarm_engine,
         )
         .await;
     });
@@ -587,9 +616,7 @@ fn background_task(
                 ))
                 .ok();
                 let _ = shutdown_tx.send(());
-                runtime.block_on(async {
-                    sleep(Duration::from_millis(800)).await;
-                });
+                let _ = coord_done_rx.recv_timeout(Duration::from_secs(5));
                 tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
                 break;
             }
@@ -631,6 +658,16 @@ struct TorrentSessionState {
     last_speed_update: std::time::Instant,
 }
 
+/// Smallest non-zero limit: a 16 KiB block must still go out within the I/O timeout.
+const MIN_LIMIT_KIB: u64 = 4;
+
+fn apply_speed_limits(store: &crate::core::session_store::SessionStore) {
+    crate::net::shaper::GlobalShaper::set_limits(
+        store.download_limit_kib * 1024,
+        store.upload_limit_kib * 1024,
+    );
+}
+
 struct TorTorApp {
     show_about: bool,
     show_link_input: bool,
@@ -639,18 +676,18 @@ struct TorTorApp {
     rx: Receiver<(usize, CoreMessage)>,
     sessions: HashMap<usize, TorrentSessionState>,
     next_id: usize,
-    listen_port: u16,
+    engine: Arc<Engine>,
+    runtime: Arc<tokio::runtime::Runtime>,
     session_store: crate::core::session_store::SessionStore,
     quit_requested: bool,
+    limits_dirty: bool,
 }
 
 impl TorTorApp {
-    fn new(listen_port: u16) -> Self {
+    fn new(engine: Arc<Engine>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
         let (tx, rx) = mpsc::channel();
-        let session_store = crate::core::session_store::SessionStore::load(
-            &std::path::PathBuf::from("session.json"),
-        )
-        .unwrap_or_default();
+        let session_store = crate::core::session_store::SessionStore::load_default();
+        apply_speed_limits(&session_store);
 
         Self {
             show_about: false,
@@ -660,9 +697,11 @@ impl TorTorApp {
             rx,
             sessions: HashMap::new(),
             next_id: 1,
-            listen_port,
+            engine,
+            runtime,
             session_store,
             quit_requested: false,
+            limits_dirty: false,
         }
     }
 
@@ -698,7 +737,8 @@ impl TorTorApp {
         self.sessions.insert(id, session);
 
         let tx = self.tx.clone();
-        let listen_port = self.listen_port;
+        let engine = self.engine.clone();
+        let runtime = self.runtime.handle().clone();
 
         std::thread::spawn(move || {
             if let Err(err) = background_task(
@@ -706,7 +746,8 @@ impl TorTorApp {
                 tx.clone(),
                 cmd_rx,
                 torrent_source,
-                listen_port,
+                engine,
+                runtime,
                 output_dir,
             ) {
                 let _ = tx.send((id, CoreMessage::Error(err.to_string())));
@@ -902,6 +943,34 @@ impl eframe::App for TorTorApp {
                 if ui.button("About").clicked() {
                     self.show_about = true;
                 }
+
+                ui.separator();
+                let store = &mut self.session_store;
+                let mut changed = false;
+                for (label, value) in [
+                    ("↓ KiB/s", &mut store.download_limit_kib),
+                    ("↑ KiB/s", &mut store.upload_limit_kib),
+                ] {
+                    ui.label(label);
+                    changed |= ui
+                        .add(egui::DragValue::new(value).range(0..=1_000_000).speed(10))
+                        .on_hover_text("Speed limit for all torrents; 0 means unlimited (otherwise at least 4)")
+                        .changed();
+                }
+                if changed {
+                    for value in [&mut store.download_limit_kib, &mut store.upload_limit_kib] {
+                        if *value > 0 {
+                            *value = (*value).max(MIN_LIMIT_KIB);
+                        }
+                    }
+                    apply_speed_limits(store);
+                    self.limits_dirty = true;
+                }
+                // Persist once the drag is over instead of on every step.
+                if self.limits_dirty && !ui.input(|i| i.pointer.any_down()) {
+                    let _ = self.session_store.save_default();
+                    self.limits_dirty = false;
+                }
             });
         });
 
@@ -926,9 +995,7 @@ impl eframe::App for TorTorApp {
                     self.session_store
                         .entries
                         .retain(|e| e.source != session.source);
-                    let _ = self
-                        .session_store
-                        .save(&std::path::PathBuf::from("session.json"));
+                    let _ = self.session_store.save_default();
                 }
 
                 if session.delete_requested {
@@ -936,6 +1003,10 @@ impl eframe::App for TorTorApp {
                         let target_path = session.output_dir.join(&meta.name);
                         let _ = std::fs::remove_dir_all(&target_path);
                         let _ = std::fs::remove_file(&target_path);
+                    }
+                    if let Some(meta) = &session.meta {
+                        let _ =
+                            std::fs::remove_file(crate::core::fsutil::resume_file(&meta.info_hash));
                     }
                     if let crate::core::session_store::TorrentSource::File(path) = &session.source {
                         let _ = std::fs::remove_file(path.with_extension("fastresume"));
@@ -976,9 +1047,7 @@ impl eframe::App for TorTorApp {
                                     is_paused: false,
                                 },
                             );
-                            let _ = self
-                                .session_store
-                                .save(&std::path::PathBuf::from("session.json"));
+                            let _ = self.session_store.save_default();
                             self.start_core(source, dir);
                         }
                     }
@@ -1022,9 +1091,7 @@ impl eframe::App for TorTorApp {
                                     is_paused: false,
                                 },
                             );
-                            let _ = self
-                                .session_store
-                                .save(&std::path::PathBuf::from("session.json"));
+                            let _ = self.session_store.save_default();
                             self.start_core(source, dir);
 
                             self.link_input_buffer.clear();

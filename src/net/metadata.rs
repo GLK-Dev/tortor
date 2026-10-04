@@ -140,13 +140,14 @@ pub async fn fetch_metadata(
     let (found_tx, mut found_rx) = mpsc::unbounded_channel::<SwarmEvent>();
     let mut dht_task = None;
     if options.use_dht {
-        match crate::net::dht::actor::DhtManager::new(0, found_tx.clone()).await {
+        match crate::net::dht::actor::DhtManager::new(0).await {
             Ok((manager, cmd_tx)) => {
                 dht_task = Some(tokio::spawn(manager.run()));
                 let _ = cmd_tx
                     .send(crate::net::dht::actor::DhtManagerCommand::StartSearch {
                         info_hash: crate::net::dht::routing::NodeId(options.info_hash),
                         announce_port: None,
+                        peers_tx: found_tx.clone(),
                     })
                     .await;
             }

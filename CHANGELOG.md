@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Architecture / Архитектура
+- **Shared network engine:** one runtime, one TCP listener, one QUIC endpoint and one DHT node for the whole application (previously one of each per torrent). Torrents register by info hash; inbound peers are routed to the right swarm. One peer id per client.
+- **Crash-safe state:** resume data and `session.json` are written atomically (temp file, fsync, rename). The session list now lives in the per-user config directory (`%APPDATA%\TorTor`), resume data in the data directory; old files are migrated/read as before. Resume files use a compact binary bitfield (JSON from older versions is still read).
+- **Disk:** pieces are no longer fsynced one by one; data is flushed before progress is recorded as durable and on shutdown. Binary-search file lookup. File re-check hashes off the coordinator thread. The coordinator thread is awaited on shutdown so the final flush finishes.
+- **Speed limits:** global download/upload limits (token bucket, no busy polling, no `unsafe`) with UI fields in the top bar; persisted in `session.json`.
+- **Removed** the decorative SIMD/GPU hashing layer: `sha1`/`sha2` already select SHA-NI/AVX2 at runtime (SHA-1 runs at ~2.2 GiB/s on the test machine, so hashing is not a bottleneck).
+
 ### Network / Сеть
 - **Piece picking:** per-peer bitfields, rarest-first selection and endgame mode; pieces are only requested from peers that have them. Fixes stalls at 99.9 %.
 - **Peer sessions:** one long-lived session per connection that downloads, uploads (seeding), sends keep-alives and drops silent/useless peers; at most 8 upload slots per torrent. Inbound TCP and QUIC connections are accepted.

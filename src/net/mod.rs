@@ -12,6 +12,7 @@ pub mod wire;
 pub mod pex;
 
 pub mod dht;
+pub mod engine;
 
 pub mod transport;
 

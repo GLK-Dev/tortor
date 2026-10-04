@@ -268,56 +268,32 @@ async fn corrupted_pieces_are_rejected_and_never_written() {
     finish(vec![evil, leecher], shutdown_tx);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn inbound_listener_handshakes_and_seeds() {
+fn all_pieces() -> Vec<u32> {
+    (0..PIECES).collect()
+}
+
+/// Dials `port` as a leecher for `info_hash` and returns the downloaded bytes.
+async fn leech_from(port: u16, info_hash: [u8; 20], data: &[u8]) -> Vec<u8> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tortor::net::handshake::Handshake;
 
-    let data = test_data();
+    // The leecher has its own shutdown signal so finishing it leaves the seeders running.
     let (shutdown_tx, _) = broadcast::channel::<()>(4);
-    let seeder = spawn_node(
-        "seed-inbound",
-        &data,
-        &(0..PIECES).collect::<Vec<_>>(),
+    let mut leecher = spawn_node(
+        &format!("leech-{:02x}", info_hash[0]),
+        data,
+        &[],
         &shutdown_tx,
     );
-    let mut leecher = spawn_node("leech-inbound", &data, &[], &shutdown_tx);
-
-    let info_hash = [7u8; 20];
-    let seeder_id = [1u8; 20];
-    let leecher_id = [2u8; 20];
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    {
-        let ctx = seeder.ctx.clone();
-        let shutdown_rx = shutdown_tx.subscribe();
-        let announce_rx = seeder.announce_tx.subscribe();
-        tokio::spawn(async move {
-            let (socket, remote) = listener.accept().await.unwrap();
-            let _ = tortor::net::inbound::serve_tcp(
-                socket,
-                remote,
-                info_hash,
-                seeder_id,
-                ctx,
-                shutdown_rx,
-                announce_rx,
-            )
-            .await;
-        });
-    }
-
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let mut socket = TcpStream::connect(addr).await.unwrap();
     socket
-        .write_all(&Handshake::new(info_hash, leecher_id).as_bytes())
+        .write_all(&Handshake::new(info_hash, [2u8; 20]).as_bytes())
         .await
         .unwrap();
     let mut reply = [0u8; Handshake::HANDSHAKE_LEN];
     socket.read_exact(&mut reply).await.unwrap();
-    let remote = Handshake::from_bytes(&reply).unwrap();
-    assert_eq!(remote.info_hash, info_hash);
-    assert_eq!(remote.peer_id, seeder_id);
+    assert_eq!(Handshake::from_bytes(&reply).unwrap().info_hash, info_hash);
 
     let ctx = leecher.ctx.clone();
     let shutdown_rx = shutdown_tx.subscribe();
@@ -329,44 +305,118 @@ async fn inbound_listener_handshakes_and_seeds() {
     });
 
     wait_for_complete(&mut leecher).await;
-    assert_eq!(*leecher.disk.lock().unwrap(), data);
-    finish(vec![seeder, leecher], shutdown_tx);
+    let downloaded = leecher.disk.lock().unwrap().clone();
+    finish(vec![leecher], shutdown_tx);
+    downloaded
 }
 
-#[tokio::test]
-async fn inbound_listener_rejects_wrong_info_hash() {
-    use tokio::io::AsyncWriteExt;
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_routes_inbound_connections_by_info_hash() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tortor::net::engine::{Engine, EngineOptions, TorrentRegistration};
     use tortor::net::handshake::Handshake;
 
-    let data = test_data();
-    let (shutdown_tx, _) = broadcast::channel::<()>(4);
-    let seeder = spawn_node("seed-reject", &data, &[0], &shutdown_tx);
+    let engine = Engine::start(EngineOptions {
+        listen_port: 0,
+        enable_dht: false,
+    })
+    .await
+    .unwrap();
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let ctx = seeder.ctx.clone();
-    let shutdown_rx = shutdown_tx.subscribe();
-    let announce_rx = seeder.announce_tx.subscribe();
-    let server = tokio::spawn(async move {
-        let (socket, remote) = listener.accept().await.unwrap();
-        tortor::net::inbound::serve_tcp(
-            socket,
-            remote,
-            [7u8; 20],
-            [1u8; 20],
-            ctx,
-            shutdown_rx,
-            announce_rx,
-        )
-        .await
-    });
+    let data_a = test_data();
+    let data_b: Vec<u8> = test_data().iter().map(|b| b.wrapping_add(1)).collect();
+    let (hash_a, hash_b) = ([0xAA; 20], [0xBB; 20]);
 
+    let (shutdown_tx, _) = broadcast::channel::<()>(8);
+    let seeder_a = spawn_node("route-a", &data_a, &all_pieces(), &shutdown_tx);
+    let seeder_b = spawn_node("route-b", &data_b, &all_pieces(), &shutdown_tx);
+    for (hash, node) in [(hash_a, &seeder_a), (hash_b, &seeder_b)] {
+        engine.register(
+            hash,
+            TorrentRegistration {
+                ctx: node.ctx.clone(),
+                shutdown_tx: shutdown_tx.clone(),
+                announce_tx: node.announce_tx.clone(),
+            },
+        );
+    }
+
+    assert_eq!(leech_from(engine.port, hash_a, &data_a).await, data_a);
+    assert_eq!(leech_from(engine.port, hash_b, &data_b).await, data_b);
+
+    // A torrent that is not registered gets no handshake back.
+    let addr: SocketAddr = ([127, 0, 0, 1], engine.port).into();
     let mut socket = TcpStream::connect(addr).await.unwrap();
     socket
         .write_all(&Handshake::new([9u8; 20], [2u8; 20]).as_bytes())
         .await
         .unwrap();
-    assert!(server.await.unwrap().is_err());
+    let mut reply = [0u8; Handshake::HANDSHAKE_LEN];
+    let read = tokio::time::timeout(Duration::from_secs(5), socket.read_exact(&mut reply))
+        .await
+        .expect("engine must close the connection");
+    assert!(read.is_err());
 
-    finish(vec![seeder], shutdown_tx);
+    engine.unregister(&hash_a);
+    assert!(engine.lookup(&hash_a).is_none());
+
+    engine.shutdown();
+    finish(vec![seeder_a, seeder_b], shutdown_tx);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_engines_transfer_through_the_dial_path() {
+    use tortor::net::engine::{Engine, EngineOptions, TorrentRegistration};
+    use tortor::net::probe::execute_probe;
+
+    let options = EngineOptions {
+        listen_port: 0,
+        enable_dht: false,
+    };
+    let (host, client) = (
+        Engine::start(options.clone()).await.unwrap(),
+        Engine::start(options).await.unwrap(),
+    );
+
+    let data = test_data();
+    let info_hash = [0xCD; 20];
+    let (shutdown_tx, _) = broadcast::channel::<()>(8);
+    let seeder = spawn_node("dial-seed", &data, &all_pieces(), &shutdown_tx);
+    let mut leecher = spawn_node("dial-leech", &data, &[], &shutdown_tx);
+
+    host.register(
+        info_hash,
+        TorrentRegistration {
+            ctx: seeder.ctx.clone(),
+            shutdown_tx: shutdown_tx.clone(),
+            announce_tx: seeder.announce_tx.clone(),
+        },
+    );
+
+    // Dials over TCP and QUIC at once, like the swarm does.
+    let addr: SocketAddr = ([127, 0, 0, 1], host.port).into();
+    let ctx = leecher.ctx.clone();
+    let shutdown_rx = shutdown_tx.subscribe();
+    let announce_rx = leecher.announce_tx.subscribe();
+    let quic = client.quic_endpoint.clone();
+    let peer_id = client.peer_id;
+    tokio::spawn(async move {
+        let _ = execute_probe(
+            addr,
+            info_hash,
+            peer_id,
+            ctx,
+            shutdown_rx,
+            announce_rx,
+            quic,
+        )
+        .await;
+    });
+
+    wait_for_complete(&mut leecher).await;
+    assert_eq!(*leecher.disk.lock().unwrap(), data);
+
+    host.shutdown();
+    client.shutdown();
+    finish(vec![seeder, leecher], shutdown_tx);
 }

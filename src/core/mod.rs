@@ -7,6 +7,7 @@ pub mod disk;
 pub mod disk_io;
 #[cfg(target_os = "linux")]
 pub mod disk_uring;
+pub mod fsutil;
 pub mod manager;
 pub mod metadata_assembler;
 pub mod peer_id;
