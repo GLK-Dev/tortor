@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use super::krpc::KrpcMessage;
 
@@ -64,7 +64,10 @@ impl DhtServer {
                 result = self.socket.recv_from(&mut buf) => {
                     match result {
                         Ok((len, src)) => {
-                            if let Ok(msg) = serde_bencode::from_bytes::<KrpcMessage>(&buf[..len]) {
+                            if let Ok(msg) = crate::core::bencode::check_bencode_depth(&buf[..len])
+                                .map_err(anyhow::Error::from)
+                                .and_then(|_| Ok(serde_bencode::from_bytes::<KrpcMessage>(&buf[..len])?))
+                            {
                                 if msg.y == "r" || msg.y == "e" {
                                     if let Some(reply_tx) = self.transactions.remove(&msg.t) {
                                         let _ = reply_tx.send(Ok(msg));
@@ -84,4 +87,3 @@ impl DhtServer {
         }
     }
 }
-

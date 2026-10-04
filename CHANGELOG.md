@@ -1,5 +1,13 @@
 # Changelog - TorTor
 
+## [Unreleased]
+
+### Security / Безопасность
+- **Wire protocol:** peer messages are decoded by a buffered, cancel-safe `MessageDecoder` with a 1 MiB message cap; unknown message ids are skipped instead of dropping the peer. REQUEST messages are validated (length ≤ 32 KiB, within the piece).
+- **Torrent parsing:** path components are sanitized (no `..`, separators, NUL, Windows reserved names), piece length / size / piece count are validated, bencode nesting depth and .torrent / metadata / tracker response sizes are limited.
+- **Robustness:** fixed `u32` overflow in block bounds, QUIC setup failures no longer panic the swarm task, tracker HTTP client has a timeout and a dynamic User-Agent.
+- **Dependencies:** `rustls` 0.23.45, `reqwest` 0.12 (drops vulnerable `h2` 0.3 / `rustls-webpki` 0.101), removed unused `bincode`; CI now runs `rustsec/audit-check`, `cargo fmt` and `clippy -D warnings` pass.
+
 ## [1.6.3] - 2026-07-15
 
 ### Bug Fixes / Исправления ошибок

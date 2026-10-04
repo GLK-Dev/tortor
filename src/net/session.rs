@@ -1,19 +1,18 @@
 use anyhow::{bail, Context, Result};
-use crate::net::transport::PeerStream;
 use std::collections::HashSet;
-use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::time::{timeout, Duration};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::time::{timeout, Duration};
 use tracing::info;
 
 use crate::core::assembler::{AssemblerState, BlockClass, PieceAssembler};
-use crate::core::coordinator::CoordinatorMsg;
 use crate::core::command::{CoreMessage, SessionTelemetry};
+use crate::core::coordinator::CoordinatorMsg;
 use crate::crypto::dispatch::{hash_piece, HashAlgorithm};
 use crate::net::swarm::SwarmEvent;
-use crate::net::wire::{PeerMessage, ExtendedHandshakeDict};
+use crate::net::wire::{ExtendedHandshakeDict, MessageDecoder, PeerMessage, MAX_BLOCK_REQUEST};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TICK: Duration = Duration::from_millis(1500);
@@ -29,10 +28,13 @@ struct PeerState {
     peer_interested: bool,
     remote_pex_id: Option<u8>,
     last_sent_peers: HashSet<SocketAddr>,
+    decoder: MessageDecoder,
+    piece_length: u32,
+    total_length: Option<u64>,
 }
 
 impl PeerState {
-    fn new() -> Self {
+    fn new(piece_length: u32, total_length: Option<u64>) -> Self {
         Self {
             am_interested: false,
             am_choking: true,
@@ -40,6 +42,9 @@ impl PeerState {
             peer_interested: false,
             remote_pex_id: None,
             last_sent_peers: HashSet::new(),
+            decoder: MessageDecoder::new(),
+            piece_length,
+            total_length,
         }
     }
 }
@@ -57,13 +62,16 @@ pub async fn run_download_session(
     mut announce_rx: broadcast::Receiver<crate::core::command::SessionEvent>,
     remote_supports_extensions: bool,
 ) -> Result<()> {
-    let mut state = PeerState::new();
+    let mut state = PeerState::new(piece_length, total_length);
 
     if remote_supports_extensions {
         let mut m = std::collections::HashMap::new();
         m.insert("ut_metadata".to_string(), 1);
         m.insert("ut_pex".to_string(), 2);
-        let ext_dict = ExtendedHandshakeDict { m, metadata_size: None };
+        let ext_dict = ExtendedHandshakeDict {
+            m,
+            metadata_size: None,
+        };
         if let Ok(payload) = serde_bencode::to_bytes(&ext_dict) {
             let _ = PeerMessage::send_extended(shaped_stream, 0, &payload).await;
         }
@@ -115,7 +123,9 @@ pub async fn run_download_session(
         };
 
         let target_piece_length = piece_len_at(target_piece_index, piece_length, total_length)
-            .ok_or_else(|| anyhow::anyhow!("invalid piece length for piece {}", target_piece_index))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("invalid piece length for piece {}", target_piece_index)
+            })?;
 
         let piece_result = download_piece(
             shaped_stream,
@@ -199,7 +209,8 @@ async fn download_piece(
     loop {
         if !state.peer_choking {
             while assembler.in_flight_count(REQUEST_RETRY_TIMEOUT) < PIPELINE_DEPTH {
-                if let Some((begin, len, is_retry)) = assembler.next_request(REQUEST_RETRY_TIMEOUT) {
+                if let Some((begin, len, is_retry)) = assembler.next_request(REQUEST_RETRY_TIMEOUT)
+                {
                     timeout(
                         IO_TIMEOUT,
                         PeerMessage::send_request(shaped_stream, target_piece_index, begin, len),
@@ -241,22 +252,22 @@ async fn download_piece(
                     Ok(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers)) => {
                         if let Some(remote_id) = state.remote_pex_id {
                             let current_set: HashSet<SocketAddr> = current_peers.into_iter().collect();
-                            
-                            let mut dropped: Vec<SocketAddr> = state.last_sent_peers.difference(&current_set).copied().take(50).collect();
+
+                            let dropped: Vec<SocketAddr> = state.last_sent_peers.difference(&current_set).copied().take(50).collect();
                             let mut added: Vec<SocketAddr> = current_set.difference(&state.last_sent_peers).copied().collect();
-                            
+
                             added.retain(|&addr| addr != peer_addr);
                             let added: Vec<SocketAddr> = added.into_iter().take(50).collect();
-                            
+
                             if !added.is_empty() || !dropped.is_empty() {
                                 state.last_sent_peers = current_set;
-                                
+
                                 let pex_msg = crate::net::pex::PexMessage {
                                     added: crate::net::pex::encode_compact_ipv4(&added),
                                     added_f: vec![0; added.len()],
                                     dropped: crate::net::pex::encode_compact_ipv4(&dropped),
                                 };
-                                
+
                                 if let Ok(payload) = serde_bencode::to_bytes(&pex_msg) {
                                     let _ = PeerMessage::send_extended(shaped_stream, remote_id, &payload).await;
                                 }
@@ -268,7 +279,7 @@ async fn download_piece(
                 continue;
             }
 
-            result = timeout(READ_TICK, PeerMessage::read_from(shaped_stream)) => result,
+            result = timeout(READ_TICK, state.decoder.next(&mut *shaped_stream)) => result,
         };
         match read_result {
             Ok(Ok(msg)) => match msg {
@@ -291,14 +302,28 @@ async fn download_piece(
                 }
                 PeerMessage::Extended { id, payload } => {
                     if id == 0 {
-                        if let Ok(ext_dict) = serde_bencode::from_bytes::<ExtendedHandshakeDict>(&payload) {
+                        if let Ok(ext_dict) = crate::core::bencode::check_bencode_depth(&payload)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|_| {
+                                Ok(serde_bencode::from_bytes::<ExtendedHandshakeDict>(
+                                    &payload,
+                                )?)
+                            })
+                        {
                             info!("Extended handshake from {}: {:?}", peer_addr, ext_dict);
                             if let Some(&remote_pex) = ext_dict.m.get("ut_pex") {
                                 state.remote_pex_id = Some(remote_pex);
                             }
                         }
                     } else if Some(id) == state.remote_pex_id {
-                        if let Ok(pex_msg) = serde_bencode::from_bytes::<crate::net::pex::PexMessage>(&payload) {
+                        if let Ok(pex_msg) = crate::core::bencode::check_bencode_depth(&payload)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|_| {
+                                Ok(serde_bencode::from_bytes::<crate::net::pex::PexMessage>(
+                                    &payload,
+                                )?)
+                            })
+                        {
                             let addrs = pex_msg.decode_added_ipv4();
                             if !addrs.is_empty() {
                                 if let Some(tx) = swarm_event_tx.as_ref() {
@@ -309,9 +334,22 @@ async fn download_piece(
                     }
                 }
                 PeerMessage::Have(_) | PeerMessage::Bitfield(_) => {}
-                PeerMessage::Request { index, begin, length } => {
+                PeerMessage::Request {
+                    index,
+                    begin,
+                    length,
+                } => {
                     if state.am_choking {
                         continue;
+                    }
+
+                    let valid = length > 0
+                        && length <= MAX_BLOCK_REQUEST
+                        && piece_len_at(index, state.piece_length, state.total_length).is_some_and(
+                            |piece_len| (begin as u64) + (length as u64) <= piece_len as u64,
+                        );
+                    if !valid {
+                        bail!("invalid REQUEST from {peer_addr}: index={index} begin={begin} length={length}");
                     }
 
                     let (reply_tx, reply_rx) = oneshot::channel();
@@ -326,10 +364,14 @@ async fn download_piece(
                         .is_ok()
                     {
                         if let Ok(Some(block)) = reply_rx.await {
-                            if let Err(err) = PeerMessage::send_piece(shaped_stream, index, begin, &block).await {
+                            if let Err(err) =
+                                PeerMessage::send_piece(shaped_stream, index, begin, &block).await
+                            {
                                 bail!("failed to send piece {}: {err}", index);
                             }
-                            let _ = ui_sender.send(CoreMessage::BytesTransferred(0, block.len())).await;
+                            let _ = ui_sender
+                                .send(CoreMessage::BytesTransferred(0, block.len()))
+                                .await;
                         }
                     }
                 }
@@ -338,7 +380,9 @@ async fn download_piece(
                     begin,
                     block,
                 } => {
-                    let _ = ui_sender.send(CoreMessage::BytesTransferred(block.len(), 0)).await;
+                    let _ = ui_sender
+                        .send(CoreMessage::BytesTransferred(block.len(), 0))
+                        .await;
                     if index != assembler.piece_index {
                         telemetry.unexpected_blocks += 1;
                         let _ = ui_sender
@@ -352,22 +396,18 @@ async fn download_piece(
                             telemetry.duplicate_blocks += 1;
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
-                            let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
-                                peer_addr,
-                                telemetry.clone(),
-                            ))
-                            .await;
+                            let _ = ui_sender
+                                .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                                .await;
                             continue;
                         }
                         BlockClass::Unexpected => {
                             telemetry.unexpected_blocks += 1;
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
-                            let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
-                                peer_addr,
-                                telemetry.clone(),
-                            ))
-                            .await;
+                            let _ = ui_sender
+                                .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                                .await;
                             continue;
                         }
                         BlockClass::ExpectedNew => {}
@@ -376,32 +416,30 @@ async fn download_piece(
                     match assembler.add_block(begin, &block) {
                         AssemblerState::InProgress => {
                             if let Some(tx) = swarm_event_tx {
-                                let _ = tx.send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
+                                let _ = tx
+                                    .send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
                             }
                             telemetry.downloaded_bytes = assembler.received_bytes();
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
-                            let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
-                                peer_addr,
-                                telemetry.clone(),
-                            ))
-                            .await;
+                            let _ = ui_sender
+                                .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                                .await;
                         }
                         AssemblerState::Error(err) => bail!("assembler error: {err}"),
                         AssemblerState::Complete(buffer) => {
                             if let Some(tx) = swarm_event_tx {
-                                let _ = tx.send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
+                                let _ = tx
+                                    .send(SwarmEvent::PeerProgress(peer_addr, block.len() as u32));
                             }
                             telemetry.downloaded_bytes = assembler.received_bytes();
                             telemetry.in_flight_requests =
                                 assembler.in_flight_count(REQUEST_RETRY_TIMEOUT);
                             telemetry.time_to_first_piece_ms =
                                 Some(session_start.elapsed().as_millis() as u64);
-                            let _ = ui_sender.send(CoreMessage::TelemetryUpdate(
-                                peer_addr,
-                                telemetry.clone(),
-                            ))
-                            .await;
+                            let _ = ui_sender
+                                .send(CoreMessage::TelemetryUpdate(peer_addr, telemetry.clone()))
+                                .await;
 
                             let actual_hash = hash_piece(&buffer, HashAlgorithm::Sha1);
                             if actual_hash.as_slice() == expected_hash.as_slice() {
@@ -428,7 +466,7 @@ async fn download_piece(
 }
 
 fn build_bitfield(total_pieces: u32, completed_pieces: &[u32]) -> Vec<u8> {
-    let bytes_len = ((total_pieces + 7) / 8) as usize;
+    let bytes_len = total_pieces.div_ceil(8) as usize;
     let mut bitfield = vec![0u8; bytes_len];
 
     for &piece_index in completed_pieces {
@@ -443,4 +481,3 @@ fn build_bitfield(total_pieces: u32, completed_pieces: &[u32]) -> Vec<u8> {
 
     bitfield
 }
-

@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -37,12 +36,14 @@ impl DhtManager {
         tokio::spawn(server.run());
 
         let mut routing_table = RoutingTable::new(local_id);
-        
+
         // Add bootstrap nodes
         if let Ok(Ok(addrs)) = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            tokio::net::lookup_host("router.bittorrent.com:6881")
-        ).await {
+            tokio::net::lookup_host("router.bittorrent.com:6881"),
+        )
+        .await
+        {
             for addr in addrs {
                 routing_table.insert(Contact {
                     id: NodeId([0; 20]), // Fake ID, will be replaced upon ping reply
@@ -67,14 +68,14 @@ impl DhtManager {
 
     pub async fn run(mut self) {
         info!("DhtManager started with node ID {:?}", self.local_id);
-        
+
         loop {
             tokio::select! {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(DhtManagerCommand::StartSearch(info_hash)) => {
                             info!("DhtManager starting recursive search for {:?}", info_hash);
-                            
+
                             // Extract up to K closest nodes from routing table.
                             // For simplicity, we just dump all nodes and sort them.
                             let mut all_nodes = Vec::new();
@@ -83,7 +84,7 @@ impl DhtManager {
                             }
                             all_nodes.sort_by_key(|c| c.id.xor(&info_hash));
                             let k_nodes: Vec<_> = all_nodes.into_iter().take(8).collect();
-                            
+
                             let search = DhtSearch::new(
                                 info_hash,
                                 self.local_id,
@@ -92,7 +93,7 @@ impl DhtManager {
                                 self.swarm_tx.clone(),
                                 self.cmd_tx.clone(),
                             );
-                            
+
                             tokio::spawn(search.run());
                         }
                         Some(DhtManagerCommand::InsertNode(contact)) => {

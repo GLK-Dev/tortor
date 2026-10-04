@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: '0 6 * * 1'
   push:
     branches: [main, master]
   pull_request:
@@ -29,3 +31,18 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Audit dependencies
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

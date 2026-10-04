@@ -67,16 +67,27 @@ pub async fn run_swarm_manager(
     let mut shutdown_rx = shutdown_tx.subscribe();
     let mut announce_rx = announce_tx.subscribe();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SwarmEvent>();
-    
-    let (server_config, client_config) = crate::crypto::tls::configure_quic().expect("Failed to configure QUIC");
-    
+
+    let (server_config, client_config) = match crate::crypto::tls::configure_quic() {
+        Ok(configs) => configs,
+        Err(err) => {
+            error!("Failed to configure QUIC: {err}");
+            let _ = ui_sender
+                .send(CoreMessage::Error(format!(
+                    "Failed to configure QUIC: {err}"
+                )))
+                .await;
+            return;
+        }
+    };
+
     let mut current_port = listen_port;
     let mut quic_endpoint_opt = None;
     let mut final_dht_port = current_port.saturating_add(1);
 
     for _ in 0..100 {
         let addr: std::net::SocketAddr = format!("0.0.0.0:{}", current_port).parse().unwrap();
-        
+
         match quinn::Endpoint::server(server_config.clone(), addr) {
             Ok(endpoint) => {
                 quic_endpoint_opt = Some(endpoint);
@@ -85,20 +96,38 @@ pub async fn run_swarm_manager(
                 break;
             }
             Err(e) => {
-                tracing::warn!("Port {} is busy (Error: {}). Trying next...", current_port, e);
+                tracing::warn!(
+                    "Port {} is busy (Error: {}). Trying next...",
+                    current_port,
+                    e
+                );
                 current_port = current_port.saturating_add(2);
             }
         }
     }
 
-    let mut quic_endpoint = quic_endpoint_opt.expect("CRITICAL ERROR: No available ports to bind QUIC!");
+    let Some(mut quic_endpoint) = quic_endpoint_opt else {
+        error!("No available port to bind the QUIC endpoint");
+        let _ = ui_sender
+            .send(CoreMessage::Error(
+                "No available port to bind the QUIC endpoint".to_string(),
+            ))
+            .await;
+        return;
+    };
     quic_endpoint.set_default_client_config(client_config);
     let quic_endpoint = std::sync::Arc::new(quic_endpoint);
 
     // Initialize DHT Manager safely using the adjacent free port
-    if let Ok((dht_manager, dht_cmd_tx)) = crate::net::dht::actor::DhtManager::new(final_dht_port, event_tx.clone()).await {
+    if let Ok((dht_manager, dht_cmd_tx)) =
+        crate::net::dht::actor::DhtManager::new(final_dht_port, event_tx.clone()).await
+    {
         tokio::spawn(dht_manager.run());
-        let _ = dht_cmd_tx.send(crate::net::dht::actor::DhtManagerCommand::StartSearch(crate::net::dht::routing::NodeId(info_hash))).await;
+        let _ = dht_cmd_tx
+            .send(crate::net::dht::actor::DhtManagerCommand::StartSearch(
+                crate::net::dht::routing::NodeId(info_hash),
+            ))
+            .await;
     }
     let mut swarm_state = SwarmState {
         last_announce: None,
@@ -385,7 +414,16 @@ fn start_reannounce(state: &mut SwarmState, event_tx: mpsc::UnboundedSender<Swar
     let event_str = state.event.clone();
 
     tokio::spawn(async move {
-        match tracker::announce(&tracker_url, &info_hash, &peer_id, listen_port, left_hint, event_str.as_deref()).await {
+        match tracker::announce(
+            &tracker_url,
+            &info_hash,
+            &peer_id,
+            listen_port,
+            left_hint,
+            event_str.as_deref(),
+        )
+        .await
+        {
             Ok(peers) => {
                 let addrs = peers.into_iter().map(|p| p.addr).collect();
                 let _ = event_tx.send(SwarmEvent::TrackerPeersReceived(addrs));

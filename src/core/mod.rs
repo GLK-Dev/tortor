@@ -1,5 +1,4 @@
 pub mod assembler;
-pub mod metadata_assembler;
 pub mod bencode;
 pub mod command;
 pub mod coordinator;
@@ -8,7 +7,8 @@ pub mod disk_io;
 #[cfg(target_os = "linux")]
 pub mod disk_uring;
 pub mod manager;
+pub mod metadata_assembler;
 pub mod peer_id;
 pub mod resume;
-pub mod torrent;
 pub mod session_store;
+pub mod torrent;

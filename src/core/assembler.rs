@@ -38,7 +38,7 @@ impl PieceAssembler {
         let num_blocks = if expected_length == 0 {
             0
         } else {
-            (expected_length + BLOCK_SIZE - 1) / BLOCK_SIZE
+            expected_length.div_ceil(BLOCK_SIZE)
         };
 
         let mut blocks = Vec::with_capacity(num_blocks as usize);
@@ -94,7 +94,7 @@ impl PieceAssembler {
     }
 
     pub fn classify_block(&self, begin: u32, data_len: u32) -> BlockClass {
-        if begin + data_len > self.expected_length {
+        if (begin as u64) + (data_len as u64) > self.expected_length as u64 {
             return BlockClass::Unexpected;
         }
 
@@ -115,7 +115,7 @@ impl PieceAssembler {
     }
 
     pub fn add_block(&mut self, begin: u32, data: &[u8]) -> AssemblerState {
-        if begin + data.len() as u32 > self.expected_length {
+        if (begin as u64) + (data.len() as u64) > self.expected_length as u64 {
             return AssemblerState::Error("block exceeds piece boundary".to_string());
         }
 
@@ -166,6 +166,17 @@ mod tests {
             }
             _ => panic!("expected complete state"),
         }
+    }
+
+    #[test]
+    fn assembler_rejects_overflowing_offsets() {
+        let a = PieceAssembler::new(0, 16384);
+        assert_eq!(a.classify_block(u32::MAX, 16384), BlockClass::Unexpected);
+        let mut a = a;
+        assert!(matches!(
+            a.add_block(u32::MAX, &[0u8; 16]),
+            AssemblerState::Error(_)
+        ));
     }
 
     #[test]

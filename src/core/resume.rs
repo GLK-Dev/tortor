@@ -38,9 +38,8 @@ pub async fn load_fastresume(path: &Path) -> Result<Option<FastResumeState>> {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            return Err(err).with_context(|| {
-                format!("failed to read fastresume file {}", path.display())
-            })
+            return Err(err)
+                .with_context(|| format!("failed to read fastresume file {}", path.display()))
         }
     };
 

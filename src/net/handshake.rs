@@ -14,7 +14,11 @@ impl Handshake {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
         let mut reserved = [0u8; 8];
         reserved[5] |= 0x10; // BEP 10 Extension Protocol
-        Self { reserved, info_hash, peer_id }
+        Self {
+            reserved,
+            info_hash,
+            peer_id,
+        }
     }
 
     pub fn supports_extension_protocol(&self) -> bool {
@@ -57,7 +61,11 @@ impl Handshake {
         let mut peer_id = [0u8; 20];
         peer_id.copy_from_slice(&bytes[48..68]);
 
-        Ok(Self { reserved, info_hash, peer_id })
+        Ok(Self {
+            reserved,
+            info_hash,
+            peer_id,
+        })
     }
 }
 

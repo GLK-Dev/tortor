@@ -1,14 +1,14 @@
-use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{error, info};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tracing::{error, info};
 
+use crate::core::bencode::parse_torrent_metadata_bytes;
 use crate::core::command::CoreMessage;
 use crate::core::disk_io::AsyncDiskIO;
 use crate::core::manager::TorrentManager;
-use crate::core::resume::{save_fastresume, FastResumeState};
 use crate::core::metadata_assembler::MetadataAssembler;
-use crate::core::bencode::parse_torrent_metadata_bytes;
+use crate::core::resume::{save_fastresume, FastResumeState};
 
 pub enum CoordinatorMsg {
     RequestWork(oneshot::Sender<Option<u32>>),
@@ -48,14 +48,23 @@ pub enum CoordinatorState {
         disk_writer: Box<dyn AsyncDiskIO>,
         paused: bool,
         has_completed: bool,
-    }
+    },
 }
 
 struct DummyDisk;
 #[async_trait::async_trait(?Send)]
 impl AsyncDiskIO for DummyDisk {
-    async fn write_piece(&mut self, _index: u32, _data: Vec<u8>) -> anyhow::Result<()> { Ok(()) }
-    async fn read_piece(&mut self, _index: u32, _offset: u32, _len: u32) -> anyhow::Result<Vec<u8>> { Ok(vec![]) }
+    async fn write_piece(&mut self, _index: u32, _data: Vec<u8>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn read_piece(
+        &mut self,
+        _index: u32,
+        _offset: u32,
+        _len: u32,
+    ) -> anyhow::Result<Vec<u8>> {
+        Ok(vec![])
+    }
 }
 
 pub async fn run_coordinator(
@@ -109,7 +118,7 @@ pub async fn run_coordinator(
                             let _ = ui_sender.send(CoreMessage::Status(format!("Checking files: {:.1}%", pct))).await;
                             let _ = ui_sender.send(CoreMessage::GlobalProgress(manager.progress())).await;
                         }
-                        
+
                         if *next_piece >= total_pieces {
                             transition = true;
                         }
@@ -143,7 +152,10 @@ pub async fn run_coordinator(
 
         match msg {
             CoordinatorMsg::RequestWork(reply) => {
-                if let CoordinatorState::DownloadingData { manager, paused, .. } = &mut state {
+                if let CoordinatorState::DownloadingData {
+                    manager, paused, ..
+                } = &mut state
+                {
                     if *paused {
                         let _ = reply.send(None);
                     } else {
@@ -155,7 +167,13 @@ pub async fn run_coordinator(
                 }
             }
             CoordinatorMsg::PieceDownloaded(index, data) => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer, has_completed, .. } = &mut state {
+                if let CoordinatorState::DownloadingData {
+                    manager,
+                    disk_writer,
+                    has_completed,
+                    ..
+                } = &mut state
+                {
                     if let Err(err) = disk_writer.write_piece(index, data).await {
                         error!("disk write failed for piece {}: {}", index, err);
                         manager.return_work(index);
@@ -163,7 +181,8 @@ pub async fn run_coordinator(
                     }
 
                     manager.mark_completed(index);
-                    let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
+                    let _ =
+                        announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
                     let progress = manager.progress();
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 
@@ -171,12 +190,10 @@ pub async fn run_coordinator(
                         error!("failed to persist fastresume: {}", err);
                     }
 
-                    if manager.is_done() {
-                        if !*has_completed {
-                            info!("torrent download complete, entering seeding mode");
-                            let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
-                            *has_completed = true;
-                        }
+                    if manager.is_done() && !*has_completed {
+                        info!("torrent download complete, entering seeding mode");
+                        let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                        *has_completed = true;
                     }
                 }
             }
@@ -192,9 +209,24 @@ pub async fn run_coordinator(
                     let _ = reply.send(vec![]);
                 }
             }
-            CoordinatorMsg::ReadPiece { index, begin, length, reply } => {
-                if let CoordinatorState::DownloadingData { manager, disk_writer, paused: _, .. } = &mut state {
-                    let should_serve = matches!(manager.piece_state(index), Some(crate::core::manager::PieceState::Downloaded));
+            CoordinatorMsg::ReadPiece {
+                index,
+                begin,
+                length,
+                reply,
+            } => {
+                if let CoordinatorState::DownloadingData {
+                    manager,
+                    disk_writer,
+                    ..
+                } = &mut state
+                {
+                    let should_serve = length > 0
+                        && length <= crate::net::wire::MAX_BLOCK_REQUEST
+                        && matches!(
+                            manager.piece_state(index),
+                            Some(crate::core::manager::PieceState::Downloaded)
+                        );
 
                     let data = if should_serve {
                         match disk_writer.read_piece(index, begin, length).await {
@@ -223,7 +255,12 @@ pub async fn run_coordinator(
             CoordinatorMsg::MetadataPieceDownloaded(index, data) => {
                 let mut transition_to_data = None;
 
-                if let CoordinatorState::DownloadingMetadata { assembler, info_hash, output_dir } = &mut state {
+                if let CoordinatorState::DownloadingMetadata {
+                    assembler,
+                    info_hash,
+                    output_dir,
+                } = &mut state
+                {
                     match assembler.add_piece(index, &data) {
                         Ok(true) => {
                             info!("Metadata download complete! Verifying SHA-1...");
@@ -253,17 +290,31 @@ pub async fn run_coordinator(
                     let _ = ui_sender.send(CoreMessage::MetadataReady(meta_arc)).await;
 
                     let manager = TorrentManager::new(meta.pieces.len() as u32);
-                    let total_size = meta.total_length.unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+                    let total_size = meta
+                        .total_length
+                        .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
 
                     #[cfg(target_os = "linux")]
                     let disk_writer_res = crate::core::disk_uring::UringDisk::init(
-                        &output_dir, total_size, meta.piece_length, meta.files.as_ref(), &meta.name
-                    ).await.map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
+                        &output_dir,
+                        total_size,
+                        meta.piece_length,
+                        meta.files.as_ref(),
+                        &meta.name,
+                    )
+                    .await
+                    .map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
 
                     #[cfg(not(target_os = "linux"))]
                     let disk_writer_res = crate::core::disk::StandardDisk::init(
-                        &output_dir, total_size, meta.piece_length, meta.files.as_ref(), &meta.name
-                    ).await.map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
+                        &output_dir,
+                        total_size,
+                        meta.piece_length,
+                        meta.files.as_ref(),
+                        &meta.name,
+                    )
+                    .await
+                    .map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
 
                     match disk_writer_res {
                         Ok(disk_writer) => {
@@ -280,7 +331,12 @@ pub async fn run_coordinator(
                                 };
                                 info!("Target path exists, transitioning to CheckingFiles...");
                             } else {
-                                state = CoordinatorState::DownloadingData { manager, disk_writer, paused: false, has_completed: false };
+                                state = CoordinatorState::DownloadingData {
+                                    manager,
+                                    disk_writer,
+                                    paused: false,
+                                    has_completed: false,
+                                };
                             }
                         }
                         Err(err) => {
@@ -316,7 +372,10 @@ pub async fn run_coordinator(
     info!("Coordinator task stopped");
 }
 
-async fn persist_resume(resume_path: &PathBuf, manager: &TorrentManager) -> anyhow::Result<()> {
+async fn persist_resume(
+    resume_path: &std::path::Path,
+    manager: &TorrentManager,
+) -> anyhow::Result<()> {
     let state = FastResumeState::from_manager(manager);
     save_fastresume(resume_path, &state).await
 }

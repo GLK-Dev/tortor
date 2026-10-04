@@ -17,7 +17,7 @@ impl GlobalShaper {
     pub fn set_limits(download_bps: usize, upload_bps: usize) {
         DOWNLOAD_LIMIT.store(download_bps as isize, Ordering::Relaxed);
         UPLOAD_LIMIT.store(upload_bps as isize, Ordering::Relaxed);
-        
+
         // Reset tokens
         DOWNLOAD_TOKENS.store(download_bps as isize, Ordering::Relaxed);
         UPLOAD_TOKENS.store(upload_bps as isize, Ordering::Relaxed);
@@ -28,7 +28,7 @@ impl GlobalShaper {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
         loop {
             interval.tick().await;
-            
+
             let dl_limit = DOWNLOAD_LIMIT.load(Ordering::Relaxed);
             if dl_limit > 0 {
                 // Add tokens for 10ms (1/100 of a second)
@@ -107,7 +107,7 @@ impl<T> ShapedStream<T> {
     pub fn new(inner: T) -> Self {
         Self { inner }
     }
-    
+
     pub fn into_inner(self) -> T {
         self.inner
     }

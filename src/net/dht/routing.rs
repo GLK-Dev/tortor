@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use serde::{Serialize, Deserialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct NodeId(pub [u8; 20]);
@@ -7,8 +7,8 @@ pub struct NodeId(pub [u8; 20]);
 impl NodeId {
     pub fn xor(&self, other: &NodeId) -> NodeId {
         let mut result = [0u8; 20];
-        for i in 0..20 {
-            result[i] = self.0[i] ^ other.0[i];
+        for (i, byte) in result.iter_mut().enumerate() {
+            *byte = self.0[i] ^ other.0[i];
         }
         NodeId(result)
     }
@@ -100,7 +100,6 @@ impl RoutingTable {
         }
 
         let mut bucket_idx = self.bucket_index(&contact.id);
-        
 
         loop {
             let covers_local = self.bucket_covers_local(bucket_idx);
@@ -117,31 +116,30 @@ impl RoutingTable {
                 return;
             }
         }
-
     }
 
     fn bucket_index(&self, target: &NodeId) -> usize {
         let distance = self.local_id.xor(target);
         let zeros = distance.leading_zeros();
-        
+
         // Find the bucket whose prefix matches.
         // In our simplified list-of-buckets model, we just iterate through.
         let mut target_idx = 0;
         for (i, bucket) in self.buckets.iter().enumerate() {
-            // In a binary tree, leading_zeros exactly maps to the bucket depth we diverge at, 
+            // In a binary tree, leading_zeros exactly maps to the bucket depth we diverge at,
             // but since buckets cover ranges, we can just find the one that fits.
             // But wait, the standard K-bucket way with a list is:
             if zeros >= bucket.prefix_len {
                 target_idx = i;
             }
         }
-        
+
         target_idx
     }
 
     fn bucket_covers_local(&self, idx: usize) -> bool {
         // A bucket covers local_id if its prefix matches local_id's prefix.
-        // Since we split strictly along the local_id's path, the LAST bucket 
+        // Since we split strictly along the local_id's path, the LAST bucket
         // in our array always covers the local_id.
         idx == self.buckets.len() - 1
     }
@@ -149,16 +147,16 @@ impl RoutingTable {
     fn split_bucket(&mut self, idx: usize) {
         let bucket = &mut self.buckets[idx];
         let split_bit_idx = bucket.prefix_len;
-        
+
         let mut new_bucket = KBucket::new(split_bit_idx + 1);
         bucket.prefix_len += 1;
-        
+
         // The bucket currently at idx always represents the branch going AWAY from local_id.
-        // The 
-// ew_bucket represents the branch continuing TOWARDS local_id.
+        // The
+        // ew_bucket represents the branch continuing TOWARDS local_id.
         // Wait, local_id's bit at split_bit_idx determines which one is which.
         let local_bit = self.local_id.bit_at(split_bit_idx);
-        
+
         let mut nodes_to_keep = Vec::with_capacity(8);
         for node in bucket.nodes.drain(..) {
             let node_bit = node.id.bit_at(split_bit_idx);
@@ -169,7 +167,7 @@ impl RoutingTable {
             }
         }
         bucket.nodes = nodes_to_keep;
-        
+
         // The new bucket (covering local_id) is always added at the end of the list.
         self.buckets.push(new_bucket);
     }
@@ -198,27 +196,33 @@ mod tests {
         let mut table = RoutingTable::new(local_id);
 
         let addr = "127.0.0.1:6881".parse().unwrap();
-        
+
         // Insert 8 nodes to fill the first bucket
         for i in 1..=8 {
             let mut id = [0u8; 20];
             id[19] = i;
-            table.insert(Contact { id: NodeId(id), addr });
+            table.insert(Contact {
+                id: NodeId(id),
+                addr,
+            });
         }
-        
+
         assert_eq!(table.buckets.len(), 1);
         assert_eq!(table.buckets[0].nodes.len(), 8);
 
         // 9th node should trigger a split
         let mut id9 = [0u8; 20];
         id9[0] = 0b1000_0000; // Bit 0 is 1, diverging from local_id (which is all 0)
-        table.insert(Contact { id: NodeId(id9), addr });
+        table.insert(Contact {
+            id: NodeId(id9),
+            addr,
+        });
 
         assert_eq!(table.buckets.len(), 2);
-        
+
         // The first bucket (prefix_len=1) handles bit 0 == 1 (since local_id has bit 0 == 0)
         assert_eq!(table.buckets[0].nodes.len(), 1); // id9
-        
+
         // The second bucket (prefix_len=1) handles bit 0 == 0
         assert_eq!(table.buckets[1].nodes.len(), 8); // the first 8 nodes
     }

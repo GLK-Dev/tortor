@@ -1,5 +1,7 @@
-#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
-
+#![cfg_attr(
+    all(not(debug_assertions), feature = "gui"),
+    windows_subsystem = "windows"
+)]
 
 use std::path::PathBuf;
 
@@ -51,7 +53,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let run_gui = !args.cli;
 
-    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
+    let log_level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     tracing_subscriber::fmt().with_max_level(log_level).init();
 
     if run_gui {
@@ -94,11 +100,20 @@ async fn run_cli(args: Args) -> Result<()> {
 
     if args.announce_tracker {
         if meta.announce.starts_with("http://") || meta.announce.starts_with("https://") {
-            let left = meta.total_length.unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+            let left = meta
+                .total_length
+                .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
 
-            let peers = tracker::announce(&meta.announce, &meta.info_hash, &peer_id, port, left, Some("started"))
-                .await
-                .context("tracker announce failed")?;
+            let peers = tracker::announce(
+                &meta.announce,
+                &meta.info_hash,
+                &peer_id,
+                port,
+                left,
+                Some("started"),
+            )
+            .await
+            .context("tracker announce failed")?;
 
             println!("Peers from tracker: {}", peers.len());
             for peer in peers.iter().take(20) {
@@ -123,5 +138,3 @@ async fn run_cli(args: Args) -> Result<()> {
 
     Ok(())
 }
-
-

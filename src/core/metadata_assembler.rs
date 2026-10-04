@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use anyhow::{bail, Result};
+use std::collections::HashSet;
 
 pub struct MetadataAssembler {
     metadata_size: usize,
@@ -11,21 +11,25 @@ pub struct MetadataAssembler {
 impl MetadataAssembler {
     pub const PIECE_SIZE: usize = 16384;
 
-    pub fn new(metadata_size: usize) -> Self {
-        let total_pieces = (metadata_size + Self::PIECE_SIZE - 1) / Self::PIECE_SIZE;
-        Self {
+    /// `metadata_size` is advertised by the remote peer, so it is bounded here.
+    pub fn new(metadata_size: usize) -> Result<Self> {
+        if metadata_size == 0 || metadata_size > crate::core::bencode::MAX_TORRENT_SIZE {
+            bail!("unacceptable metadata size: {metadata_size}");
+        }
+        let total_pieces = metadata_size.div_ceil(Self::PIECE_SIZE);
+        Ok(Self {
             metadata_size,
             buffer: vec![0u8; metadata_size],
             received_pieces: HashSet::new(),
             total_pieces: total_pieces as u32,
-        }
+        })
     }
 
     pub fn add_piece(&mut self, piece: u32, data: &[u8]) -> Result<bool> {
         if piece >= self.total_pieces {
             bail!("Piece index out of bounds");
         }
-        
+
         let start = (piece as usize) * Self::PIECE_SIZE;
         let mut end = start + Self::PIECE_SIZE;
         if end > self.metadata_size {
@@ -33,7 +37,11 @@ impl MetadataAssembler {
         }
 
         if data.len() != end - start {
-            bail!("Invalid metadata piece size: expected {}, got {}", end - start, data.len());
+            bail!(
+                "Invalid metadata piece size: expected {}, got {}",
+                end - start,
+                data.len()
+            );
         }
 
         self.buffer[start..end].copy_from_slice(data);
@@ -51,11 +59,6 @@ impl MetadataAssembler {
     }
 
     pub fn next_missing_piece(&self) -> Option<u32> {
-        for i in 0..self.total_pieces {
-            if !self.received_pieces.contains(&i) {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.total_pieces).find(|i| !self.received_pieces.contains(i))
     }
 }

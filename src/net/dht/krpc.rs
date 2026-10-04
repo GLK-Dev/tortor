@@ -5,16 +5,16 @@ pub struct KrpcMessage {
     #[serde(with = "serde_bytes")]
     pub t: Vec<u8>,
     pub y: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub q: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub a: Option<QueryArgs>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r: Option<ResponseArgs>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub e: Option<Vec<serde_bencode::value::Value>>,
 }
@@ -23,19 +23,19 @@ pub struct KrpcMessage {
 pub struct QueryArgs {
     #[serde(with = "serde_bytes")]
     pub id: Vec<u8>,
-    
+
     #[serde(with = "serde_bytes", default)]
     pub target: Vec<u8>,
-    
+
     #[serde(with = "serde_bytes", default)]
     pub info_hash: Vec<u8>,
-    
+
     #[serde(default)]
     pub port: Option<u16>,
-    
+
     #[serde(with = "serde_bytes", default)]
     pub token: Vec<u8>,
-    
+
     #[serde(default)]
     pub implied_port: Option<u8>,
 }
@@ -44,13 +44,13 @@ pub struct QueryArgs {
 pub struct ResponseArgs {
     #[serde(with = "serde_bytes")]
     pub id: Vec<u8>,
-    
+
     #[serde(with = "serde_bytes", default)]
     pub nodes: Vec<u8>,
-    
+
     #[serde(default)]
     pub values: Vec<serde_bytes::ByteBuf>,
-    
+
     #[serde(with = "serde_bytes", default)]
     pub token: Vec<u8>,
 }

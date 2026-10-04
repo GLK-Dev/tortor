@@ -20,6 +20,7 @@ pub trait GpuHasher {
     fn hash_sha256_batch(&self, pieces: &[&[u8]]) -> Result<Vec<[u8; 32]>, GpuHashError>;
 }
 
+#[derive(Default)]
 pub struct StubGpuHasher;
 
 impl StubGpuHasher {
