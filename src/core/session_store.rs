@@ -16,6 +16,9 @@ pub struct SessionEntry {
     pub source: TorrentSource,
     pub output_dir: PathBuf,
     pub is_paused: bool,
+    /// Which files of a multi-file torrent are downloaded; `None` means all.
+    #[serde(default)]
+    pub selected_files: Option<Vec<bool>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -79,6 +82,7 @@ mod tests {
                 source: TorrentSource::Magnet("magnet:?xt=urn:btih:abc".into()),
                 output_dir: PathBuf::from("downloads"),
                 is_paused: true,
+                selected_files: Some(vec![true, false]),
             }],
             download_limit_kib: 512,
             upload_limit_kib: 64,
@@ -87,6 +91,7 @@ mod tests {
         let loaded = SessionStore::load(&path).unwrap();
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.download_limit_kib, 512);
+        assert_eq!(loaded.entries[0].selected_files, Some(vec![true, false]));
 
         // A file written before limits existed still loads.
         fs::write(&path, r#"{"entries":[]}"#).unwrap();

@@ -14,6 +14,11 @@ impl Bitfield {
         }
     }
 
+    /// A bitfield with every piece set.
+    pub fn full(len: usize) -> Self {
+        Self::from_indices(len, 0..len as u32)
+    }
+
     /// Parses a wire BITFIELD payload. Rejects a wrong size or set spare bits.
     pub fn from_wire(len: usize, payload: &[u8]) -> Option<Self> {
         if payload.len() != len.div_ceil(8) {

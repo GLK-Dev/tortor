@@ -7,7 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use crate::core::disk_io::AsyncDiskIO;
 
 pub struct FileMapping {
-    pub file: File,
+    /// `None` for files that are not downloaded: their bytes are discarded.
+    pub file: Option<File>,
     pub start_offset: u64,
     pub end_offset: u64,
     /// Written since the last `flush`.
@@ -27,6 +28,20 @@ impl StandardDisk {
         files_meta: Option<&Vec<crate::core::torrent::TorrentFile>>,
         name: &str,
     ) -> Result<Self> {
+        Self::init_with_selection(base_dir, total_size, piece_length, files_meta, name, None).await
+    }
+
+    /// Like `init`, but files whose entry in `selected` is `false` are not
+    /// created: data belonging to them is dropped on write and reads as zeros.
+    pub async fn init_with_selection(
+        base_dir: impl AsRef<Path>,
+        total_size: u64,
+        piece_length: u32,
+        files_meta: Option<&Vec<crate::core::torrent::TorrentFile>>,
+        name: &str,
+        selected: Option<&[bool]>,
+    ) -> Result<Self> {
+        let selected: Option<Vec<bool>> = selected.map(<[bool]>::to_vec);
         let base_dir = base_dir.as_ref().to_path_buf();
         let name = name.to_string();
         let is_multi = files_meta.is_some();
@@ -37,14 +52,25 @@ impl StandardDisk {
             }]
         });
 
-        let mappings_data =
-            tokio::task::spawn_blocking(move || -> Result<Vec<(std::fs::File, u64, u64)>> {
+        let mappings_data = tokio::task::spawn_blocking(
+            move || -> Result<Vec<(Option<std::fs::File>, u64, u64)>> {
                 std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
 
                 let mut mappings = Vec::new();
                 let mut current_offset = 0u64;
 
-                for tf in torrent_files {
+                for (index, tf) in torrent_files.into_iter().enumerate() {
+                    let keep = selected
+                        .as_ref()
+                        .and_then(|flags| flags.get(index))
+                        .copied()
+                        .unwrap_or(true);
+                    if !keep {
+                        mappings.push((None, current_offset, current_offset + tf.length));
+                        current_offset += tf.length;
+                        continue;
+                    }
+
                     let file_path =
                         crate::core::torrent::build_file_path(&base_dir, &name, is_multi, &tf.path)
                             .map_err(anyhow::Error::msg)?;
@@ -68,18 +94,19 @@ impl StandardDisk {
                         })?;
                     }
 
-                    mappings.push((std_file, current_offset, current_offset + tf.length));
+                    mappings.push((Some(std_file), current_offset, current_offset + tf.length));
                     current_offset += tf.length;
                 }
 
                 Ok(mappings)
-            })
-            .await??;
+            },
+        )
+        .await??;
 
         let files = mappings_data
             .into_iter()
             .map(|(std_file, start_offset, end_offset)| FileMapping {
-                file: File::from_std(std_file),
+                file: std_file.map(File::from_std),
                 start_offset,
                 end_offset,
                 dirty: false,
@@ -104,7 +131,9 @@ fn locate(files: &mut [FileMapping], offset: u64) -> Option<&mut FileMapping> {
 impl AsyncDiskIO for StandardDisk {
     async fn flush(&mut self) -> Result<()> {
         for mapping in self.files.iter_mut().filter(|m| m.dirty) {
-            mapping.file.sync_data().await?;
+            if let Some(file) = mapping.file.as_mut() {
+                file.sync_data().await?;
+            }
             mapping.dirty = false;
         }
         Ok(())
@@ -122,12 +151,11 @@ impl AsyncDiskIO for StandardDisk {
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
 
-                mapping.file.seek(SeekFrom::Start(file_offset)).await?;
-                mapping
-                    .file
-                    .write_all(&data[written..written + to_write])
-                    .await?;
-                mapping.dirty = true;
+                if let Some(file) = mapping.file.as_mut() {
+                    file.seek(SeekFrom::Start(file_offset)).await?;
+                    file.write_all(&data[written..written + to_write]).await?;
+                    mapping.dirty = true;
+                }
 
                 written += to_write;
             } else {
@@ -153,11 +181,11 @@ impl AsyncDiskIO for StandardDisk {
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
 
-                mapping.file.seek(SeekFrom::Start(file_offset)).await?;
-                mapping
-                    .file
-                    .read_exact(&mut buffer[read..read + to_read])
-                    .await?;
+                // Files that are not downloaded read as zeros.
+                if let Some(file) = mapping.file.as_mut() {
+                    file.seek(SeekFrom::Start(file_offset)).await?;
+                    file.read_exact(&mut buffer[read..read + to_read]).await?;
+                }
 
                 read += to_read;
             } else {
@@ -225,6 +253,51 @@ mod tests {
             std::fs::read(dir.join("t").join("c.bin")).unwrap(),
             data[35..40]
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unselected_files_are_not_created() {
+        let dir = std::env::temp_dir().join(format!("tortor-disk-sel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let files = vec![
+            TorrentFile {
+                length: 10,
+                path: vec!["skip.bin".into()],
+            },
+            TorrentFile {
+                length: 20,
+                path: vec!["keep.bin".into()],
+            },
+        ];
+        let data: Vec<u8> = (100..130u8).collect();
+        let mut disk = StandardDisk::init_with_selection(
+            &dir,
+            30,
+            15,
+            Some(&files),
+            "t",
+            Some(&[false, true]),
+        )
+        .await
+        .unwrap();
+
+        // Piece 0 straddles both files; the skipped part is discarded.
+        disk.write_piece(0, data[0..15].to_vec()).await.unwrap();
+        disk.write_piece(1, data[15..30].to_vec()).await.unwrap();
+        disk.flush().await.unwrap();
+
+        assert!(!dir.join("t").join("skip.bin").exists());
+        assert_eq!(
+            std::fs::read(dir.join("t").join("keep.bin")).unwrap(),
+            data[10..30]
+        );
+
+        let first = disk.read_piece(0, 0, 15).await.unwrap();
+        assert_eq!(first[..10], [0u8; 10]);
+        assert_eq!(first[10..], data[10..15]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

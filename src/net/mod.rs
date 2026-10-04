@@ -10,6 +10,7 @@ pub mod tracker;
 pub mod wire;
 
 pub mod pex;
+pub mod portmap;
 
 pub mod dht;
 pub mod engine;

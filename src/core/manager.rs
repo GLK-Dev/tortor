@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rand::Rng;
 
 use crate::core::bitfield::Bitfield;
+use crate::core::selection::Selection;
 
 /// How many peers may download the same piece at once during endgame.
 const MAX_ENDGAME_HOLDERS: u32 = 3;
@@ -23,6 +24,9 @@ pub struct TorrentManager {
     /// Number of connected peers that advertise each piece.
     availability: Vec<u16>,
     missing_dirty: bool,
+    selection: Selection,
+    wanted_total: u32,
+    wanted_completed: u32,
 }
 
 impl TorrentManager {
@@ -31,15 +35,32 @@ impl TorrentManager {
     }
 
     pub fn from_completed(total_pieces: u32, completed_pieces: &[u32]) -> Self {
+        Self::with_selection(
+            total_pieces,
+            completed_pieces,
+            Selection::all(total_pieces as usize),
+        )
+    }
+
+    /// Like `from_completed`, but only the pieces in `selection.wanted` are
+    /// downloaded and pieces in `selection.unservable` are never uploaded.
+    pub fn with_selection(
+        total_pieces: u32,
+        completed_pieces: &[u32],
+        selection: Selection,
+    ) -> Self {
         let completed: HashSet<u32> = completed_pieces
             .iter()
             .copied()
             .filter(|idx| *idx < total_pieces)
             .collect();
 
+        let wanted_here = |idx: &u32| selection.wanted.has(*idx as usize);
         let missing: VecDeque<u32> = (0..total_pieces)
-            .filter(|idx| !completed.contains(idx))
+            .filter(|idx| wanted_here(idx) && !completed.contains(idx))
             .collect();
+        let wanted_total = (0..total_pieces).filter(wanted_here).count() as u32;
+        let wanted_completed = completed.iter().filter(|idx| wanted_here(idx)).count() as u32;
 
         Self {
             total_pieces,
@@ -48,7 +69,28 @@ impl TorrentManager {
             completed,
             availability: vec![0; total_pieces as usize],
             missing_dirty: false,
+            selection,
+            wanted_total,
+            wanted_completed,
         }
+    }
+
+    pub fn is_wanted(&self, piece_index: u32) -> bool {
+        self.selection.wanted.has(piece_index as usize)
+    }
+
+    /// Completed and fully stored on disk, so it may be offered to other peers.
+    pub fn is_servable(&self, piece_index: u32) -> bool {
+        self.completed.contains(&piece_index)
+            && !self.selection.unservable.has(piece_index as usize)
+    }
+
+    /// Completed pieces that may be advertised to peers, in order.
+    pub fn servable_pieces(&self) -> Vec<u32> {
+        self.completed_pieces()
+            .into_iter()
+            .filter(|piece| !self.selection.unservable.has(*piece as usize))
+            .collect()
     }
 
     /// Picks the next piece for a peer that advertises `peer_has`.
@@ -128,6 +170,9 @@ impl TorrentManager {
         self.in_progress.remove(&piece_index);
         if self.completed.insert(piece_index) {
             self.missing_dirty = true;
+            if self.is_wanted(piece_index) {
+                self.wanted_completed += 1;
+            }
         }
     }
 
@@ -161,16 +206,20 @@ impl TorrentManager {
         self.availability.get(index as usize).copied().unwrap_or(0)
     }
 
+    /// Fraction of the wanted pieces that are complete.
     pub fn progress(&self) -> f32 {
         if self.total_pieces == 0 {
             0.0
+        } else if self.wanted_total == 0 {
+            1.0
         } else {
-            self.completed.len() as f32 / self.total_pieces as f32
+            self.wanted_completed as f32 / self.wanted_total as f32
         }
     }
 
+    /// Every wanted piece is complete.
     pub fn is_done(&self) -> bool {
-        self.completed.len() as u32 == self.total_pieces
+        self.wanted_completed == self.wanted_total
     }
 
     pub fn completed_count(&self) -> usize {
@@ -223,6 +272,39 @@ mod tests {
         mgr.mark_completed(p);
         assert!(mgr.progress() > 0.0);
         assert_eq!(mgr.piece_state(p), Some(PieceState::Downloaded));
+    }
+
+    #[test]
+    fn selection_limits_work_progress_and_serving() {
+        use crate::core::torrent::TorrentFile;
+        let files = [
+            TorrentFile {
+                length: 15,
+                path: vec!["a".into()],
+            },
+            TorrentFile {
+                length: 25,
+                path: vec!["b".into()],
+            },
+        ];
+        // Only the second file: pieces 1..=3 wanted, 0 and 1 unservable.
+        let selection = Selection::from_files(&files, &[false, true], 10, 4);
+        let mut mgr = TorrentManager::with_selection(4, &[], selection);
+
+        assert!(!mgr.is_wanted(0) && mgr.is_wanted(1));
+        let first = mgr.next_work_for(&all(4)).unwrap();
+        assert!(mgr.is_wanted(first));
+        for piece in [1, 2, 3] {
+            mgr.mark_completed(piece);
+        }
+        assert!(mgr.is_done());
+        assert_eq!(mgr.progress(), 1.0);
+        // Piece 0 was never wanted and is never handed out.
+        assert_eq!(mgr.next_work_for(&all(4)), None);
+        // Piece 1 touches the skipped file, so only 2 and 3 are served.
+        assert_eq!(mgr.servable_pieces(), vec![2, 3]);
+        assert!(!mgr.is_servable(1) && mgr.is_servable(2));
+        assert_eq!(mgr.completed_count(), 3);
     }
 
     #[test]

@@ -13,6 +13,8 @@ use tortor::core::command::{CoreMessage, SessionEvent};
 use tortor::core::coordinator::{run_coordinator, CoordinatorMsg, CoordinatorState};
 use tortor::core::disk_io::AsyncDiskIO;
 use tortor::core::manager::TorrentManager;
+use tortor::core::selection::Selection;
+use tortor::core::torrent::TorrentFile;
 use tortor::crypto::core::hash_sha1;
 use tortor::net::session::{
     run_peer_session, PeerContext, TransferStats, UploadSlots, MAX_UPLOAD_SLOTS,
@@ -66,6 +68,17 @@ struct Node {
 
 /// Starts a coordinator that already owns the pieces in `have`.
 fn spawn_node(name: &str, data: &[u8], have: &[u32], shutdown_tx: &broadcast::Sender<()>) -> Node {
+    spawn_node_with(name, data, have, None, shutdown_tx)
+}
+
+/// Like `spawn_node`, optionally restricting the download to a file selection.
+fn spawn_node_with(
+    name: &str,
+    data: &[u8],
+    have: &[u32],
+    selection: Option<Selection>,
+    shutdown_tx: &broadcast::Sender<()>,
+) -> Node {
     let hashes = Arc::new(piece_hashes(data));
     let mut initial = vec![0u8; data.len()];
     for &piece in have {
@@ -94,7 +107,11 @@ fn spawn_node(name: &str, data: &[u8], have: &[u32], shutdown_tx: &broadcast::Se
         std::thread::spawn(move || {
             // The disk trait object is not `Send`, so the state is built on this thread.
             let state = CoordinatorState::DownloadingData {
-                manager: TorrentManager::from_completed(PIECES, &have),
+                manager: TorrentManager::with_selection(
+                    PIECES,
+                    &have,
+                    selection.unwrap_or_else(|| Selection::all(PIECES as usize)),
+                ),
                 disk_writer: Box::new(MemDisk { data: disk }),
                 paused: false,
                 has_completed: false,
@@ -268,12 +285,19 @@ async fn corrupted_pieces_are_rejected_and_never_written() {
     finish(vec![evil, leecher], shutdown_tx);
 }
 
+const LOCALHOST: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
 fn all_pieces() -> Vec<u32> {
     (0..PIECES).collect()
 }
 
 /// Dials `port` as a leecher for `info_hash` and returns the downloaded bytes.
-async fn leech_from(port: u16, info_hash: [u8; 20], data: &[u8]) -> Vec<u8> {
+async fn leech_from(
+    host: std::net::IpAddr,
+    port: u16,
+    info_hash: [u8; 20],
+    data: &[u8],
+) -> Vec<u8> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tortor::net::handshake::Handshake;
 
@@ -285,7 +309,7 @@ async fn leech_from(port: u16, info_hash: [u8; 20], data: &[u8]) -> Vec<u8> {
         &[],
         &shutdown_tx,
     );
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let addr = SocketAddr::new(host, port);
     let mut socket = TcpStream::connect(addr).await.unwrap();
     socket
         .write_all(&Handshake::new(info_hash, [2u8; 20]).as_bytes())
@@ -319,6 +343,7 @@ async fn engine_routes_inbound_connections_by_info_hash() {
     let engine = Engine::start(EngineOptions {
         listen_port: 0,
         enable_dht: false,
+        enable_port_mapping: false,
     })
     .await
     .unwrap();
@@ -341,8 +366,14 @@ async fn engine_routes_inbound_connections_by_info_hash() {
         );
     }
 
-    assert_eq!(leech_from(engine.port, hash_a, &data_a).await, data_a);
-    assert_eq!(leech_from(engine.port, hash_b, &data_b).await, data_b);
+    assert_eq!(
+        leech_from(LOCALHOST, engine.port, hash_a, &data_a).await,
+        data_a
+    );
+    assert_eq!(
+        leech_from(LOCALHOST, engine.port, hash_b, &data_b).await,
+        data_b
+    );
 
     // A torrent that is not registered gets no handshake back.
     let addr: SocketAddr = ([127, 0, 0, 1], engine.port).into();
@@ -372,6 +403,7 @@ async fn two_engines_transfer_through_the_dial_path() {
     let options = EngineOptions {
         listen_port: 0,
         enable_dht: false,
+        enable_port_mapping: false,
     };
     let (host, client) = (
         Engine::start(options.clone()).await.unwrap(),
@@ -418,5 +450,116 @@ async fn two_engines_transfer_through_the_dial_path() {
 
     host.shutdown();
     client.shutdown();
+    finish(vec![seeder, leecher], shutdown_tx);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_serves_ipv6_peers_over_tcp_and_quic() {
+    use std::net::{IpAddr, Ipv6Addr};
+    use tortor::net::engine::{Engine, EngineOptions, TorrentRegistration};
+    use tortor::net::handshake::Handshake;
+
+    let engine = Engine::start(EngineOptions {
+        listen_port: 0,
+        enable_dht: false,
+        enable_port_mapping: false,
+    })
+    .await
+    .unwrap();
+    if !engine.ipv6 {
+        eprintln!("host has no IPv6, skipping");
+        engine.shutdown();
+        return;
+    }
+
+    let data = test_data();
+    let info_hash = [0xEE; 20];
+    let (shutdown_tx, _) = broadcast::channel::<()>(8);
+    let seeder = spawn_node("v6-seed", &data, &all_pieces(), &shutdown_tx);
+    engine.register(
+        info_hash,
+        TorrentRegistration {
+            ctx: seeder.ctx.clone(),
+            shutdown_tx: shutdown_tx.clone(),
+            announce_tx: seeder.announce_tx.clone(),
+        },
+    );
+
+    // A full download over IPv6 TCP.
+    let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    assert_eq!(leech_from(v6, engine.port, info_hash, &data).await, data);
+
+    // QUIC handshakes over both families on the single dual-stack socket.
+    let client = Engine::start(EngineOptions {
+        listen_port: 0,
+        enable_dht: false,
+        enable_port_mapping: false,
+    })
+    .await
+    .unwrap();
+    for host in [v6, LOCALHOST] {
+        let addr = SocketAddr::new(host, engine.port);
+        let conn = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.quic_endpoint.connect(addr, "tortor.local").unwrap(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("QUIC connect to {addr} timed out"))
+        .unwrap_or_else(|e| panic!("QUIC connect to {addr} failed: {e}"));
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&Handshake::new(info_hash, [3u8; 20]).as_bytes())
+            .await
+            .unwrap();
+        let mut reply = [0u8; Handshake::HANDSHAKE_LEN];
+        tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(Handshake::from_bytes(&reply).unwrap().info_hash, info_hash);
+    }
+
+    client.shutdown();
+    engine.shutdown();
+    finish(vec![seeder], shutdown_tx);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_selected_files_are_downloaded() {
+    let data = test_data();
+    let (shutdown_tx, _) = broadcast::channel::<()>(4);
+
+    // Two files: 70000 bytes, then the rest. Pieces are 32 KiB, so piece 2
+    // holds the end of the first file and the start of the second.
+    let first_len = 70_000u64;
+    let files = [
+        TorrentFile {
+            length: first_len,
+            path: vec!["a".into()],
+        },
+        TorrentFile {
+            length: data.len() as u64 - first_len,
+            path: vec!["b".into()],
+        },
+    ];
+    let selection = Selection::from_files(&files, &[false, true], PIECE_LENGTH, PIECES as usize);
+    assert_eq!(
+        selection.wanted.iter_ones().collect::<Vec<_>>(),
+        vec![2, 3, 4, 5]
+    );
+
+    let seeder = spawn_node("sel-seed", &data, &all_pieces(), &shutdown_tx);
+    let mut leecher = spawn_node_with("sel-leech", &data, &[], Some(selection), &shutdown_tx);
+    connect(&leecher, &seeder, &shutdown_tx).await;
+
+    wait_for_complete(&mut leecher).await;
+
+    let disk = leecher.disk.lock().unwrap().clone();
+    let piece = PIECE_LENGTH as usize;
+    assert!(
+        disk[..2 * piece].iter().all(|&b| b == 0),
+        "pieces of the skipped file must not be downloaded"
+    );
+    assert_eq!(disk[2 * piece..], data[2 * piece..]);
+
     finish(vec![seeder, leecher], shutdown_tx);
 }

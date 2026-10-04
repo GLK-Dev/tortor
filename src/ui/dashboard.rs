@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
@@ -18,9 +18,11 @@ use crate::core::disk_io::AsyncDiskIO;
 use crate::core::disk_uring::UringDisk;
 use crate::core::manager::TorrentManager;
 use crate::core::resume::load_fastresume;
+use crate::core::selection::Selection;
 use crate::core::session_store::TorrentSource;
 use crate::core::torrent::TorrentMeta;
 use crate::net::engine::{Engine, EngineOptions};
+use crate::net::portmap::PortMapStatus;
 use crate::net::swarm;
 use crate::net::tracker;
 
@@ -38,6 +40,79 @@ struct PeerRow {
     addr: SocketAddr,
     state: ProbeState,
     telemetry: Option<SessionTelemetry>,
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Collapsible file list with checkboxes. The choice is editable until the
+/// swarm starts. Returns the new flags when the user changed them.
+fn file_picker(
+    ui: &mut egui::Ui,
+    id: usize,
+    files: &[crate::core::torrent::TorrentFile],
+    session: &TorrentSessionState,
+) -> Option<Vec<bool>> {
+    let editable = !session.swarm_started && !session.is_shutting_down;
+    let mut flags = session
+        .selection
+        .lock()
+        .unwrap()
+        .clone()
+        .filter(|flags| flags.len() == files.len())
+        .unwrap_or_else(|| vec![true; files.len()]);
+    let before = flags.clone();
+
+    egui::CollapsingHeader::new(format!(
+        "🗂 Files: {} of {} selected",
+        flags.iter().filter(|keep| **keep).count(),
+        files.len()
+    ))
+    .id_salt(("torrent-files", id))
+    .show(ui, |ui| {
+        ui.add_enabled_ui(editable, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("All").clicked() {
+                    flags.fill(true);
+                }
+                if ui.button("None").clicked() {
+                    flags.fill(false);
+                }
+            });
+            egui::ScrollArea::vertical()
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for (index, file) in files.iter().enumerate() {
+                        let label =
+                            format!("{}  ({})", file.path.join("/"), human_size(file.length));
+                        ui.checkbox(&mut flags[index], label);
+                    }
+                });
+        });
+        if !editable {
+            ui.label("The selection is fixed once the download has started.");
+        }
+    });
+
+    // At least one file must stay selected.
+    if flags != before && flags.iter().any(|keep| *keep) {
+        *session.selection.lock().unwrap() = Some(flags.clone());
+        Some(flags)
+    } else {
+        None
+    }
 }
 
 fn ascii_progress_bar(progress: f32, width: usize) -> String {
@@ -78,6 +153,7 @@ pub fn run_dashboard(
     let engine = runtime.block_on(Engine::start(EngineOptions {
         listen_port,
         enable_dht: true,
+        enable_port_mapping: true,
     }))?;
 
     let app_engine = engine.clone();
@@ -91,7 +167,7 @@ pub fn run_dashboard(
             // Resume saved sessions
             let entries = app.session_store.entries.clone();
             for entry in entries {
-                app.start_core(entry.source, entry.output_dir);
+                app.start_core(entry.source, entry.output_dir, entry.selected_files);
             }
 
             // Start CLI-provided torrent if any
@@ -99,6 +175,7 @@ pub fn run_dashboard(
                 app.start_core(
                     crate::core::session_store::TorrentSource::File(path),
                     output_dir,
+                    None,
                 );
             }
             Ok(Box::new(app))
@@ -106,7 +183,7 @@ pub fn run_dashboard(
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
 
-    engine.shutdown();
+    runtime.block_on(engine.shutdown_graceful());
     Ok(())
 }
 
@@ -154,6 +231,7 @@ fn background_task(
     engine: Arc<Engine>,
     runtime: tokio::runtime::Handle,
     output_dir: PathBuf,
+    selection: Arc<Mutex<Option<Vec<bool>>>>,
 ) -> Result<()> {
     let listen_port = engine.port;
     let magnet = match &torrent_source {
@@ -295,9 +373,27 @@ fn background_task(
         }
     }
 
-    let left = meta
-        .total_length
-        .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64));
+    // Which files to download. Only meaningful for multi-file torrents; a
+    // selection that covers everything is stored as `None`.
+    let chosen_files: Option<Vec<bool>> = selection.lock().unwrap().clone().filter(|flags| {
+        meta.files
+            .as_ref()
+            .is_some_and(|files| files.len() == flags.len())
+            && flags.iter().any(|keep| *keep)
+    });
+    let file_selection = match (&meta.files, &chosen_files) {
+        (Some(files), Some(flags)) => {
+            Selection::from_files(files, flags, meta.piece_length, meta.pieces.len())
+        }
+        _ => Selection::all(meta.pieces.len()),
+    };
+    let chosen_files = chosen_files.filter(|_| !file_selection.is_all());
+
+    let left = file_selection.wanted_bytes(
+        meta.piece_length,
+        meta.total_length
+            .unwrap_or((meta.piece_length as u64) * (meta.pieces_count as u64)),
+    );
 
     let peers = if meta.trackers.is_empty() {
         tx.send((
@@ -401,7 +497,11 @@ fn background_task(
     };
     let manager = match loaded_resume {
         Ok(Some(state)) if is_valid => {
-            let mgr = state.clone().into_manager(meta.pieces_count);
+            let mgr = TorrentManager::with_selection(
+                meta.pieces_count,
+                &state.completed,
+                file_selection.clone(),
+            );
             tx.send((
                 session_id,
                 CoreMessage::Status(format!(
@@ -417,7 +517,8 @@ fn background_task(
                 "Файлы для торрента {} не найдены на диске! Остановка загрузки.",
                 meta.name
             );
-            let mgr = TorrentManager::new(meta.pieces_count);
+            let mgr =
+                TorrentManager::with_selection(meta.pieces_count, &[], file_selection.clone());
             tx.send((
                 session_id,
                 CoreMessage::Status("[ERROR: Missing]".to_string()),
@@ -437,7 +538,7 @@ fn background_task(
             if is_valid && target_path.exists() {
                 requires_check = true;
             }
-            TorrentManager::new(meta.pieces_count)
+            TorrentManager::with_selection(meta.pieces_count, &[], file_selection.clone())
         }
         Err(err) => {
             if is_valid && target_path.exists() {
@@ -448,7 +549,7 @@ fn background_task(
                 CoreMessage::Status(format!("Failed to load fast resume: {err}")),
             ))
             .ok();
-            TorrentManager::new(meta.pieces_count)
+            TorrentManager::with_selection(meta.pieces_count, &[], file_selection.clone())
         }
     };
     let (coord_tx, coord_rx) = tokio_mpsc::channel::<CoordinatorMsg>(2048);
@@ -462,6 +563,7 @@ fn background_task(
         let meta_name = meta.name.clone();
         let meta_piece_length = meta.piece_length;
         let meta_pieces_c = meta.pieces.clone();
+        let chosen_files_c = chosen_files.clone();
 
         let ui_async_tx_c = ui_async_tx.clone();
         let shutdown_rx_c = shutdown_tx.subscribe();
@@ -475,12 +577,13 @@ fn background_task(
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                match StandardDisk::init(
+                match StandardDisk::init_with_selection(
                     &output_dir_c,
                     total_size,
                     meta_piece_length,
                     meta_files.as_ref(),
                     &meta_name,
+                    chosen_files_c.as_deref(),
                 )
                 .await
                 {
@@ -647,6 +750,8 @@ struct TorrentSessionState {
     is_shutting_down: bool,
     delete_requested: bool,
     swarm_started: bool,
+    /// Files of a multi-file torrent to download (`None` = all); read when the swarm starts.
+    selection: Arc<Mutex<Option<Vec<bool>>>>,
     is_paused: bool,
     expanded: bool,
     has_error: bool,
@@ -705,11 +810,17 @@ impl TorTorApp {
         }
     }
 
-    fn start_core(&mut self, torrent_source: TorrentSource, output_dir: PathBuf) {
+    fn start_core(
+        &mut self,
+        torrent_source: TorrentSource,
+        output_dir: PathBuf,
+        selected_files: Option<Vec<bool>>,
+    ) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
         let id = self.next_id;
         self.next_id += 1;
 
+        let selection = Arc::new(Mutex::new(selected_files));
         let session = TorrentSessionState {
             id,
             output_dir: output_dir.clone(),
@@ -723,6 +834,7 @@ impl TorTorApp {
             is_shutting_down: false,
             delete_requested: false,
             swarm_started: false,
+            selection: selection.clone(),
             is_paused: false,
             expanded: true,
             has_error: false,
@@ -749,6 +861,7 @@ impl TorTorApp {
                 engine,
                 runtime,
                 output_dir,
+                selection,
             ) {
                 let _ = tx.send((id, CoreMessage::Error(err.to_string())));
             }
@@ -966,6 +1079,26 @@ impl eframe::App for TorTorApp {
                     apply_speed_limits(store);
                     self.limits_dirty = true;
                 }
+                ui.separator();
+                let (text, hover) = match &*self.engine.port_map.borrow() {
+                    PortMapStatus::Disabled => (format!("Port {}", self.engine.port), String::new()),
+                    PortMapStatus::Searching => (
+                        format!("Port {} (UPnP…)", self.engine.port),
+                        "Looking for a UPnP router".to_string(),
+                    ),
+                    PortMapStatus::Mapped { external_ip } => (
+                        format!("Port {} (UPnP ✓)", self.engine.port),
+                        format!("Forwarded by the router; external address: {external_ip:?}"),
+                    ),
+                    PortMapStatus::Unavailable(reason) => (
+                        format!("Port {} (UPnP ✗)", self.engine.port),
+                        format!("{reason}. Forward the port manually for incoming connections."),
+                    ),
+                };
+                let label = ui.label(text);
+                if !hover.is_empty() {
+                    label.on_hover_text(hover);
+                }
                 // Persist once the drag is over instead of on every step.
                 if self.limits_dirty && !ui.input(|i| i.pointer.any_down()) {
                     let _ = self.session_store.save_default();
@@ -1045,10 +1178,11 @@ impl eframe::App for TorTorApp {
                                     source: source.clone(),
                                     output_dir: dir.clone(),
                                     is_paused: false,
+                                    selected_files: None,
                                 },
                             );
                             let _ = self.session_store.save_default();
-                            self.start_core(source, dir);
+                            self.start_core(source, dir, None);
                         }
                     }
                 }
@@ -1089,10 +1223,11 @@ impl eframe::App for TorTorApp {
                                     source: source.clone(),
                                     output_dir: dir.clone(),
                                     is_paused: false,
+                                    selected_files: None,
                                 },
                             );
                             let _ = self.session_store.save_default();
-                            self.start_core(source, dir);
+                            self.start_core(source, dir, None);
 
                             self.link_input_buffer.clear();
                             self.show_link_input = false;
@@ -1109,6 +1244,7 @@ impl eframe::App for TorTorApp {
                 return;
             }
 
+            let mut selection_update: Option<(TorrentSource, Vec<bool>)> = None;
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut ids: Vec<usize> = self.sessions.keys().copied().collect();
                 ids.sort_unstable(); // Keep order consistent
@@ -1206,6 +1342,11 @@ impl eframe::App for TorTorApp {
                                     RichText::new(format!("📦 Pieces: {}", meta.pieces_count))
                                         .color(Color32::LIGHT_GRAY),
                                 );
+                                if let Some(files) = &meta.files {
+                                    if let Some(flags) = file_picker(ui, id, files, session) {
+                                        selection_update = Some((session.source.clone(), flags));
+                                    }
+                                }
                             }
 
                             ui.add_space(8.0);
@@ -1304,6 +1445,19 @@ impl eframe::App for TorTorApp {
                     ui.add_space(8.0);
                 }
             });
+
+            if let Some((source, flags)) = selection_update {
+                let all = flags.iter().all(|keep| *keep);
+                if let Some(entry) = self
+                    .session_store
+                    .entries
+                    .iter_mut()
+                    .find(|entry| entry.source == source)
+                {
+                    entry.selected_files = (!all).then_some(flags);
+                    let _ = self.session_store.save_default();
+                }
+            }
         });
 
         ctx.request_repaint();

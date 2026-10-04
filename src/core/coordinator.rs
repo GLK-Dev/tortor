@@ -125,7 +125,13 @@ pub async fn run_coordinator(
                             *piece_length
                         };
 
-                        if let Ok(data) = disk_writer.read_piece(index, 0, length).await {
+                        // Pieces outside the selected files are neither stored nor checked.
+                        let read = if manager.is_wanted(index) {
+                            disk_writer.read_piece(index, 0, length).await
+                        } else {
+                            Err(anyhow::anyhow!("piece {index} is not wanted"))
+                        };
+                        if let Ok(data) = read {
                             let expected = expected_hashes[index as usize];
                             let verified = tokio::task::spawn_blocking(move || {
                                 crate::crypto::core::hash_sha1(&data) == expected
@@ -134,7 +140,9 @@ pub async fn run_coordinator(
                             .unwrap_or(false);
                             if verified {
                                 manager.mark_completed(index);
-                                let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
+                                if manager.is_servable(index) {
+                                    let _ = announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
+                                }
                             }
                         }
 
@@ -228,8 +236,10 @@ pub async fn run_coordinator(
                     }
 
                     manager.mark_completed(index);
-                    let _ =
-                        announce_tx.send(crate::core::command::SessionEvent::PieceCompleted(index));
+                    if manager.is_servable(index) {
+                        let _ = announce_tx
+                            .send(crate::core::command::SessionEvent::PieceCompleted(index));
+                    }
                     let progress = manager.progress();
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
 
@@ -259,7 +269,7 @@ pub async fn run_coordinator(
             }
             CoordinatorMsg::GetCompletedPieces(reply) => {
                 if let CoordinatorState::DownloadingData { manager, .. } = &mut state {
-                    let _ = reply.send(manager.completed_pieces());
+                    let _ = reply.send(manager.servable_pieces());
                 } else {
                     let _ = reply.send(vec![]);
                 }
@@ -278,10 +288,7 @@ pub async fn run_coordinator(
                 {
                     let should_serve = length > 0
                         && length <= crate::net::wire::MAX_BLOCK_REQUEST
-                        && matches!(
-                            manager.piece_state(index),
-                            Some(crate::core::manager::PieceState::Downloaded)
-                        );
+                        && manager.is_servable(index);
 
                     let data = if should_serve {
                         match disk_writer.read_piece(index, begin, length).await {

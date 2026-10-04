@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Features / Возможности
+- **File selection:** for multi-file torrents the file list with checkboxes (All / None) is shown before the swarm is started; only pieces that overlap the selected files are downloaded, progress and completion refer to the selection, and unselected files are not created. Pieces that straddle a skipped file are verified but never served to other peers. The selection is saved in `session.json`; it is fixed once the download has started. (Magnet links: files are known only after the metadata arrives, so everything is downloaded.)
+- **IPv6:** the TCP listener and the QUIC endpoint are dual-stack (one port serves IPv4 and IPv6, falling back to IPv4 only); PEX exchanges IPv6 peers (`added6`/`dropped6`, key names fixed to BEP 11).
+- **UPnP:** the peer port (TCP and UDP) is forwarded on a UPnP router, renewed every 30 minutes and removed on exit; the status is shown in the top bar. Routers that only accept permanent leases are handled. NAT-PMP/PCP are not implemented.
+
 ### Architecture / Архитектура
 - **Shared network engine:** one runtime, one TCP listener, one QUIC endpoint and one DHT node for the whole application (previously one of each per torrent). Torrents register by info hash; inbound peers are routed to the right swarm. One peer id per client.
 - **Crash-safe state:** resume data and `session.json` are written atomically (temp file, fsync, rename). The session list now lives in the per-user config directory (`%APPDATA%\TorTor`), resume data in the data directory; old files are migrated/read as before. Resume files use a compact binary bitfield (JSON from older versions is still read).

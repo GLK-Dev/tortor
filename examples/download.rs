@@ -1,7 +1,7 @@
 //! Headless download of a magnet link for a limited time; used to check the
 //! network stack against real swarms.
 //!
-//! Usage: cargo run --release --example download -- "<magnet>" <output-dir> [seconds]
+//! Usage: cargo run --release --example download -- "<magnet>" <output-dir> [seconds] [file,indexes]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ use tortor::core::coordinator::{run_coordinator, CoordinatorMsg, CoordinatorStat
 use tortor::core::disk::StandardDisk;
 use tortor::core::disk_io::AsyncDiskIO;
 use tortor::core::manager::TorrentManager;
+use tortor::core::selection::Selection;
 use tortor::net::engine::{Engine, EngineOptions};
 use tortor::net::metadata::{fetch_metadata, FetchOptions};
 use tortor::net::{magnet, swarm};
@@ -30,11 +31,17 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing magnet"))?;
     let output = std::path::PathBuf::from(args.next().unwrap_or_else(|| "download-test".into()));
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let chosen: Option<Vec<usize>> = args.next().map(|list| {
+        list.split(',')
+            .filter_map(|i| i.trim().parse().ok())
+            .collect()
+    });
 
     let magnet = magnet::parse(&uri)?;
     let engine = Engine::start(EngineOptions {
         listen_port: 6881,
         enable_dht: true,
+        enable_port_mapping: true,
     })
     .await?;
     let (peer_id, port) = (engine.peer_id, engine.port);
@@ -63,6 +70,34 @@ async fn main() -> anyhow::Result<()> {
         total / (1024 * 1024)
     );
 
+    if let Some(files) = &meta.files {
+        for (index, file) in files.iter().enumerate() {
+            println!(
+                "  file {index}: {} ({} bytes)",
+                file.path.join("/"),
+                file.length
+            );
+        }
+    }
+    let flags: Option<Vec<bool>> = match (&meta.files, &chosen) {
+        (Some(files), Some(chosen)) => {
+            Some((0..files.len()).map(|i| chosen.contains(&i)).collect())
+        }
+        _ => None,
+    };
+    let selection = match (&meta.files, &flags) {
+        (Some(files), Some(flags)) => {
+            Selection::from_files(files, flags, meta.piece_length, meta.pieces.len())
+        }
+        _ => Selection::all(meta.pieces.len()),
+    };
+    println!(
+        "downloading {} of {} pieces ({} bytes)",
+        selection.wanted.count(),
+        meta.pieces.len(),
+        selection.wanted_bytes(meta.piece_length, total)
+    );
+
     let (coord_tx, coord_rx) = mpsc::channel::<CoordinatorMsg>(2048);
     let (ui_tx, mut ui_rx) = mpsc::channel::<CoreMessage>(1024);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
@@ -72,23 +107,25 @@ async fn main() -> anyhow::Result<()> {
         let (ui_tx, shutdown_rx, announce_tx) =
             (ui_tx.clone(), shutdown_tx.subscribe(), announce_tx.clone());
         let (output, meta) = (output.clone(), meta.clone());
+        let (selection, flags) = (selection.clone(), flags.clone());
         std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
                 .block_on(async move {
-                    let disk = StandardDisk::init(
+                    let disk = StandardDisk::init_with_selection(
                         &output,
                         meta.total_length.unwrap_or(0),
                         meta.piece_length,
                         meta.files.as_ref(),
                         &meta.name,
+                        flags.as_deref(),
                     )
                     .await
                     .expect("disk init");
                     let state = CoordinatorState::DownloadingData {
-                        manager: TorrentManager::new(meta.pieces_count),
+                        manager: TorrentManager::with_selection(meta.pieces_count, &[], selection),
                         disk_writer: Box::new(disk) as Box<dyn AsyncDiskIO>,
                         paused: false,
                         has_completed: false,
@@ -156,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let _ = shutdown_tx.send(());
-    engine.shutdown();
+    engine.shutdown_graceful().await;
     let _ = tokio::time::timeout(Duration::from_secs(5), swarm_task).await;
     let _ = coordinator.join();
     println!(

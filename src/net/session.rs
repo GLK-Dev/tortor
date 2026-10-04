@@ -369,11 +369,7 @@ impl PeerSession<'_, '_> {
 
                 if !added.is_empty() || !dropped.is_empty() {
                     self.last_sent_peers = current_set;
-                    let pex_msg = crate::net::pex::PexMessage {
-                        added: crate::net::pex::encode_compact_ipv4(&added),
-                        added_f: vec![0; added.len()],
-                        dropped: crate::net::pex::encode_compact_ipv4(&dropped),
-                    };
+                    let pex_msg = crate::net::pex::PexMessage::from_peers(&added, &dropped);
                     if let Ok(payload) = serde_bencode::to_bytes(&pex_msg) {
                         let _ = PeerMessage::send_extended(&mut *self.stream, remote_id, &payload)
                             .await;
@@ -469,7 +465,7 @@ impl PeerSession<'_, '_> {
         } else if Some(id) == self.remote_pex_id {
             if let Ok(pex_msg) = serde_bencode::from_bytes::<crate::net::pex::PexMessage>(&payload)
             {
-                let addrs = pex_msg.decode_added_ipv4();
+                let addrs = pex_msg.decode_added();
                 if !addrs.is_empty() {
                     if let Some(tx) = self.ctx.swarm_event_tx.as_ref() {
                         let _ = tx.send(SwarmEvent::PexPeersReceived(addrs));
