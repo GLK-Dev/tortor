@@ -9,7 +9,7 @@ use tracing::{debug, info};
 use crate::net::dht::krpc::{KrpcMessage, QueryArgs, ResponseArgs};
 use crate::net::dht::routing::{Contact, NodeId, RoutingTable};
 use crate::net::dht::search::DhtSearch;
-use crate::net::dht::server::{DhtCommand, DhtServer};
+use crate::net::dht::server::{canonical, DhtCommand, DhtServer};
 use crate::net::swarm::SwarmEvent;
 
 const BOOTSTRAP_HOSTS: [&str; 3] = [
@@ -131,6 +131,7 @@ pub struct DhtManager {
     incoming_rx: mpsc::Receiver<(SocketAddr, KrpcMessage)>,
     peer_store: PeerStore,
     tokens: Tokens,
+    port: u16,
 }
 
 /// Placeholder id for bootstrap routers, whose real id is not known yet.
@@ -140,27 +141,32 @@ fn pseudo_id(addr: &SocketAddr) -> NodeId {
     NodeId(id)
 }
 
-fn encode_nodes(contacts: &[Contact]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(contacts.len() * 26);
+/// Splits contacts into the compact IPv4 list (26 bytes per node) and the
+/// compact IPv6 list of BEP 32 (38 bytes per node).
+fn encode_nodes(contacts: &[Contact]) -> (Vec<u8>, Vec<u8>) {
+    let (mut v4, mut v6) = (Vec::new(), Vec::new());
     for contact in contacts {
-        if let SocketAddr::V4(v4) = contact.addr {
-            out.extend_from_slice(&contact.id.0);
-            out.extend_from_slice(&v4.ip().octets());
-            out.extend_from_slice(&v4.port().to_be_bytes());
+        match canonical(contact.addr) {
+            SocketAddr::V4(addr) => {
+                v4.extend_from_slice(&contact.id.0);
+                v4.extend_from_slice(&addr.ip().octets());
+                v4.extend_from_slice(&addr.port().to_be_bytes());
+            }
+            SocketAddr::V6(addr) => {
+                v6.extend_from_slice(&contact.id.0);
+                v6.extend_from_slice(&addr.ip().octets());
+                v6.extend_from_slice(&addr.port().to_be_bytes());
+            }
         }
     }
-    out
+    (v4, v6)
 }
 
+/// One `values` entry: 6 bytes for an IPv4 peer, 18 bytes for an IPv6 peer.
 fn encode_value(addr: &SocketAddr) -> Option<serde_bytes::ByteBuf> {
-    match addr {
-        SocketAddr::V4(v4) => {
-            let mut raw = v4.ip().octets().to_vec();
-            raw.extend_from_slice(&v4.port().to_be_bytes());
-            Some(serde_bytes::ByteBuf::from(raw))
-        }
-        SocketAddr::V6(_) => None,
-    }
+    let (v4, v6) = crate::net::pex::split_compact(std::slice::from_ref(addr));
+    let raw = if v4.is_empty() { v6 } else { v4 };
+    (!raw.is_empty()).then(|| serde_bytes::ByteBuf::from(raw))
 }
 
 impl DhtManager {
@@ -169,6 +175,7 @@ impl DhtManager {
 
         let (incoming_tx, incoming_rx) = mpsc::channel(256);
         let (server, server_cmd_tx) = DhtServer::new(port, incoming_tx).await?;
+        let bound_port = server.local_addr().port();
         tokio::spawn(server.run());
 
         let mut routing_table = RoutingTable::new(local_id);
@@ -196,9 +203,15 @@ impl DhtManager {
             incoming_rx,
             peer_store: PeerStore::default(),
             tokens: Tokens::new(),
+            port: bound_port,
         };
 
         Ok((manager, cmd_tx))
+    }
+
+    /// The UDP port the DHT socket is bound to.
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     pub async fn run(mut self) {
@@ -245,9 +258,20 @@ impl DhtManager {
         }
     }
 
-    /// Answers a query from another node (BEP 5): ping, find_node, get_peers
-    /// and announce_peer. Returns the reply to send, if any.
+    /// The nodes to put in a reply: IPv4 contacts for an IPv4 requester and
+    /// IPv6 contacts (`nodes6`) for an IPv6 requester (BEP 32).
+    fn nodes_for(&self, target: &NodeId, requester: &SocketAddr) -> (Vec<u8>, Vec<u8>) {
+        let want_v6 = requester.is_ipv6();
+        let contacts = self
+            .routing_table
+            .closest_where(target, K, |c| canonical(c.addr).is_ipv6() == want_v6);
+        encode_nodes(&contacts)
+    }
+
+    /// Answers a query from another node (BEP 5, BEP 32): ping, find_node,
+    /// get_peers and announce_peer. Returns the reply to send, if any.
     fn handle_query(&mut self, src: SocketAddr, msg: KrpcMessage) -> Option<KrpcMessage> {
+        let src = canonical(src);
         let tid = msg.t.clone();
         let (Some(name), Some(args)) = (msg.q.as_deref(), msg.a.as_ref()) else {
             return Some(KrpcMessage::error(tid, 203, "Protocol Error"));
@@ -256,7 +280,7 @@ impl DhtManager {
             return Some(KrpcMessage::error(tid, 203, "Invalid node id"));
         };
 
-        if src.is_ipv4() && src.port() != 0 {
+        if crate::net::dht::server::is_valid_node_addr(&src) {
             self.routing_table.insert(Contact {
                 id: NodeId(sender_id),
                 addr: src,
@@ -267,6 +291,7 @@ impl DhtManager {
         let base = ResponseArgs {
             id: self.local_id.0.to_vec(),
             nodes: vec![],
+            nodes6: vec![],
             token: vec![],
             values: vec![],
         };
@@ -275,9 +300,10 @@ impl DhtManager {
             "ping" => Some(reply(base)),
             "find_node" => {
                 let target = <[u8; 20]>::try_from(args.target.as_slice()).ok()?;
-                let nodes = self.routing_table.closest(&NodeId(target), K);
+                let (nodes, nodes6) = self.nodes_for(&NodeId(target), &src);
                 Some(reply(ResponseArgs {
-                    nodes: encode_nodes(&nodes),
+                    nodes,
+                    nodes6,
                     ..base
                 }))
             }
@@ -291,13 +317,14 @@ impl DhtManager {
                     .iter()
                     .filter_map(encode_value)
                     .collect();
-                let nodes = if values.is_empty() {
-                    encode_nodes(&self.routing_table.closest(&NodeId(info_hash), K))
+                let (nodes, nodes6) = if values.is_empty() {
+                    self.nodes_for(&NodeId(info_hash), &src)
                 } else {
-                    vec![]
+                    (vec![], vec![])
                 };
                 Some(reply(ResponseArgs {
                     nodes,
+                    nodes6,
                     token: self.tokens.issue(src.ip()),
                     values,
                     ..base
@@ -342,7 +369,7 @@ impl DhtManager {
 
 async fn lookup_bootstrap(host: &str) -> Vec<SocketAddr> {
     match tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(host)).await {
-        Ok(Ok(addrs)) => addrs.filter(SocketAddr::is_ipv4).collect(),
+        Ok(Ok(addrs)) => addrs.collect(),
         _ => Vec::new(),
     }
 }
@@ -418,6 +445,125 @@ mod tests {
             .values;
         assert_eq!(values.len(), 1);
         assert_eq!(&values[0][..], &[10, 1, 2, 3, 0x1A, 0xE1]);
+    }
+
+    #[tokio::test]
+    async fn ipv6_requesters_get_nodes6_and_ipv6_peers() {
+        let mut dht = manager().await;
+        let v4: SocketAddr = "10.1.2.3:6881".parse().unwrap();
+        let v6: SocketAddr = "[2001:db8::2]:6881".parse().unwrap();
+
+        // One IPv4 and one IPv6 node introduce themselves.
+        dht.handle_query(v4, query("ping", QueryArgs::new(vec![7; 20])));
+        dht.handle_query(v6, query("ping", QueryArgs::new(vec![8; 20])));
+
+        let mut args = QueryArgs::new(vec![9; 20]);
+        args.target = vec![1; 20];
+        let reply = dht
+            .handle_query(
+                "[2001:db8::3]:6881".parse().unwrap(),
+                query("find_node", args),
+            )
+            .unwrap()
+            .r
+            .unwrap();
+        assert!(
+            reply.nodes.is_empty(),
+            "an IPv6 requester gets no IPv4 nodes"
+        );
+        assert!(reply.nodes6.chunks(38).any(|c| c[..20] == [8u8; 20]));
+        assert!(!reply.nodes6.chunks(38).any(|c| c[..20] == [7u8; 20]));
+
+        // An IPv6 peer announces itself and is returned as an 18-byte value.
+        let info_hash = vec![5u8; 20];
+        let mut get = QueryArgs::new(vec![8; 20]);
+        get.info_hash = info_hash.clone();
+        let token = dht
+            .handle_query(v6, query("get_peers", get.clone()))
+            .unwrap()
+            .r
+            .unwrap()
+            .token;
+        let mut announce = QueryArgs::new(vec![8; 20]);
+        announce.info_hash = info_hash;
+        announce.port = Some(51413);
+        announce.token = token;
+        assert_eq!(
+            dht.handle_query(v6, query("announce_peer", announce))
+                .unwrap()
+                .y,
+            "r"
+        );
+
+        let values = dht
+            .handle_query(v4, query("get_peers", get))
+            .unwrap()
+            .r
+            .unwrap()
+            .values;
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].len(), 18);
+        assert_eq!(
+            crate::net::pex::decode_compact_peers(&values[0]),
+            vec!["[2001:db8::2]:51413".parse::<SocketAddr>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn mapped_ipv4_sources_are_treated_as_ipv4() {
+        let mut dht = manager().await;
+        let mapped: SocketAddr = "[::ffff:10.1.2.3]:6881".parse().unwrap();
+        dht.handle_query(mapped, query("ping", QueryArgs::new(vec![7; 20])));
+
+        let mut args = QueryArgs::new(vec![9; 20]);
+        args.target = vec![1; 20];
+        let reply = dht
+            .handle_query("10.9.9.9:1".parse().unwrap(), query("find_node", args))
+            .unwrap()
+            .r
+            .unwrap();
+        assert!(reply.nodes6.is_empty());
+        assert!(reply
+            .nodes
+            .chunks(26)
+            .any(|c| c[..20] == [7u8; 20] && c[20..24] == [10, 1, 2, 3]));
+    }
+
+    #[tokio::test]
+    async fn answers_over_real_sockets_on_both_families() {
+        use crate::net::dht::server::DhtServer;
+
+        let (manager, _cmd) = DhtManager::new(0).await.unwrap();
+        let port = manager.port();
+        tokio::spawn(manager.run());
+
+        let (incoming_tx, _incoming_rx) = mpsc::channel(8);
+        let (server, client) = DhtServer::new(0, incoming_tx).await.unwrap();
+        tokio::spawn(server.run());
+
+        let mut targets: Vec<SocketAddr> = vec![SocketAddr::from(([127, 0, 0, 1], port))];
+        if std::net::UdpSocket::bind("[::1]:0").is_ok() {
+            targets.push(SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)));
+        }
+
+        for target in targets {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            client
+                .send(DhtCommand::SendQuery {
+                    target,
+                    msg: KrpcMessage::new_ping_query(vec![], vec![4; 20]),
+                    reply: reply_tx,
+                })
+                .await
+                .unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+                .await
+                .unwrap_or_else(|_| panic!("no answer from {target}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(reply.y, "r", "{target}");
+            assert_eq!(reply.r.unwrap().id.len(), 20);
+        }
     }
 
     #[tokio::test]

@@ -3,13 +3,15 @@
 ## [Unreleased]
 
 ### Features / Возможности
-- **File selection:** for multi-file torrents the file list with checkboxes (All / None) is shown before the swarm is started; only pieces that overlap the selected files are downloaded, progress and completion refer to the selection, and unselected files are not created. Pieces that straddle a skipped file are verified but never served to other peers. The selection is saved in `session.json`; it is fixed once the download has started. (Magnet links: files are known only after the metadata arrives, so everything is downloaded.)
-- **IPv6:** the TCP listener and the QUIC endpoint are dual-stack (one port serves IPv4 and IPv6, falling back to IPv4 only); PEX exchanges IPv6 peers (`added6`/`dropped6`, key names fixed to BEP 11).
+- **File selection:** for multi-file torrents the file list with checkboxes (All / None) is shown in the torrent panel; only pieces that overlap the selected files are downloaded, progress and completion refer to the selection, and unselected files are not created. Pieces that straddle a skipped file are verified but never served to other peers. The selection is saved in session.json and can be changed while downloading: files added later are created and the pieces they share with already finished ones are fetched again; released files keep their data on disk. (Magnet links: files are known only after the metadata arrives, so everything is downloaded.)
+- **IPv6:** the DHT socket is dual-stack as well (BEP 32: 
+odes6, 18-byte IPv6 peer values, family-matched replies). The TCP listener and the QUIC endpoint are dual-stack (one port serves IPv4 and IPv6, falling back to IPv4 only); PEX exchanges IPv6 peers (`added6`/`dropped6`, key names fixed to BEP 11).
 - **UPnP:** the peer port (TCP and UDP) is forwarded on a UPnP router, renewed every 30 minutes and removed on exit; the status is shown in the top bar. Routers that only accept permanent leases are handled. NAT-PMP/PCP are not implemented.
 
 ### Architecture / Архитектура
 - **Shared network engine:** one runtime, one TCP listener, one QUIC endpoint and one DHT node for the whole application (previously one of each per torrent). Torrents register by info hash; inbound peers are routed to the right swarm. One peer id per client.
 - **Crash-safe state:** resume data and `session.json` are written atomically (temp file, fsync, rename). The session list now lives in the per-user config directory (`%APPDATA%\TorTor`), resume data in the data directory; old files are migrated/read as before. Resume files use a compact binary bitfield (JSON from older versions is still read).
+- **io_uring (Linux):** the backend now supports file selection, deferred flush and binary-search lookup, and handles partial reads/writes. The Linux build is cross-checked (cargo check/clippy --target x86_64-unknown-linux-gnu) but has not been run.
 - **Disk:** pieces are no longer fsynced one by one; data is flushed before progress is recorded as durable and on shutdown. Binary-search file lookup. File re-check hashes off the coordinator thread. The coordinator thread is awaited on shutdown so the final flush finishes.
 - **Speed limits:** global download/upload limits (token bucket, no busy polling, no `unsafe`) with UI fields in the top bar; persisted in `session.json`.
 - **Removed** the decorative SIMD/GPU hashing layer: `sha1`/`sha2` already select SHA-NI/AVX2 at runtime (SHA-1 runs at ~2.2 GiB/s on the test machine, so hashing is not a bottleneck).

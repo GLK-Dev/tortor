@@ -1,129 +1,186 @@
-use anyhow::{Context, Result};
-use async_trait::async_trait;
+//! io_uring disk backend; compiled on Linux only (see `core/mod.rs`).
+
 use std::path::{Path, PathBuf};
 
-// This file is compiled only on Linux
-#[cfg(target_os = "linux")]
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use tokio_uring::buf::IoBuf;
 use tokio_uring::fs::{File, OpenOptions};
 
+use crate::core::disk::{is_selected, open_preallocated, plan_files};
 use crate::core::disk_io::AsyncDiskIO;
+use crate::core::torrent::TorrentFile;
 
-#[cfg(target_os = "linux")]
 pub struct UringFileMapping {
-    pub file: File,
-    pub start_offset: u64,
-    pub end_offset: u64,
+    path: PathBuf,
+    /// `None` for files that are not downloaded: their bytes are discarded.
+    file: Option<File>,
+    start_offset: u64,
+    end_offset: u64,
+    /// Written since the last `flush`.
+    dirty: bool,
 }
 
-#[cfg(target_os = "linux")]
 pub struct UringDisk {
     files: Vec<UringFileMapping>,
     piece_length: u32,
 }
 
-#[cfg(target_os = "linux")]
+/// io_uring writes may be partial, so keep going until everything is written.
+async fn write_fully(file: &File, mut buf: Vec<u8>, pos: u64) -> Result<()> {
+    let len = buf.len();
+    let mut done = 0usize;
+    while done < len {
+        let (result, slice) = file.write_at(buf.slice(done..), pos + done as u64).await;
+        let written = result?;
+        anyhow::ensure!(written > 0, "write returned zero bytes");
+        done += written;
+        buf = slice.into_inner();
+    }
+    Ok(())
+}
+
+/// Reads exactly `len` bytes starting at `pos`.
+async fn read_fully(file: &File, len: usize, pos: u64) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    let mut done = 0usize;
+    while done < len {
+        let (result, slice) = file.read_at(buf.slice(done..), pos + done as u64).await;
+        let read = result?;
+        anyhow::ensure!(read > 0, "unexpected end of file");
+        done += read;
+        buf = slice.into_inner();
+    }
+    Ok(buf)
+}
+
+async fn open_uring(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .await
+        .with_context(|| format!("failed to open file {}", path.display()))
+}
+
 impl UringDisk {
     pub async fn init(
         base_dir: impl AsRef<Path>,
         total_size: u64,
         piece_length: u32,
-        files_meta: Option<&Vec<crate::core::torrent::TorrentFile>>,
+        files_meta: Option<&Vec<TorrentFile>>,
         name: &str,
     ) -> Result<Self> {
-        let base_dir = base_dir.as_ref().to_path_buf();
-        let name = name.to_string();
+        Self::init_with_selection(base_dir, total_size, piece_length, files_meta, name, None).await
+    }
+
+    /// Like `init`, but files whose entry in `selected` is `false` are not
+    /// created: data belonging to them is dropped on write and reads as zeros.
+    pub async fn init_with_selection(
+        base_dir: impl AsRef<Path>,
+        total_size: u64,
+        piece_length: u32,
+        files_meta: Option<&Vec<TorrentFile>>,
+        name: &str,
+        selected: Option<&[bool]>,
+    ) -> Result<Self> {
+        let base_dir = base_dir.as_ref();
         let is_multi = files_meta.is_some();
         let torrent_files = files_meta.cloned().unwrap_or_else(|| {
-            vec![crate::core::torrent::TorrentFile {
+            vec![TorrentFile {
                 length: total_size,
-                path: vec![name.clone()],
+                path: vec![name.to_string()],
             }]
         });
 
-        let mappings_data =
-            tokio::task::spawn_blocking(move || -> Result<Vec<(PathBuf, u64, u64)>> {
-                std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
+        std::fs::create_dir_all(base_dir).context("failed to create base dir")?;
 
-                let mut mappings = Vec::new();
-                let mut current_offset = 0u64;
-
-                for tf in torrent_files {
-                    let file_path =
-                        crate::core::torrent::build_file_path(&base_dir, &name, is_multi, &tf.path)
-                            .map_err(anyhow::Error::msg)?;
-
-                    if let Some(parent) = file_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-
-                    let std_file = std::fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(&file_path)
-                        .with_context(|| format!("failed to open file {}", file_path.display()))?;
-
-                    let metadata = std_file.metadata()?;
-                    if metadata.len() != tf.length {
-                        std_file.set_len(tf.length).with_context(|| {
-                            format!("failed to preallocate {}", file_path.display())
-                        })?;
-                    }
-
-                    mappings.push((file_path, current_offset, current_offset + tf.length));
-                    current_offset += tf.length;
-                }
-
-                Ok(mappings)
-            })
-            .await??;
-
-        let mut mappings = Vec::new();
-        for (file_path, start_offset, end_offset) in mappings_data {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&file_path)
-                .await
-                .with_context(|| format!("failed to open file {}", file_path.display()))?;
-
-            mappings.push(UringFileMapping {
+        let mut files = Vec::new();
+        for (index, plan) in plan_files(base_dir, name, is_multi, &torrent_files)?
+            .into_iter()
+            .enumerate()
+        {
+            let file = if is_selected(selected, index) {
+                // Create and size the file with plain std calls, then reopen it for io_uring.
+                open_preallocated(&plan.path, plan.end - plan.start)?;
+                Some(open_uring(&plan.path).await?)
+            } else {
+                None
+            };
+            files.push(UringFileMapping {
+                path: plan.path,
                 file,
-                start_offset,
-                end_offset,
+                start_offset: plan.start,
+                end_offset: plan.end,
+                dirty: false,
             });
         }
 
         Ok(Self {
-            files: mappings,
+            files,
             piece_length,
         })
     }
 }
 
-#[cfg(target_os = "linux")]
+/// Finds the file that contains the absolute byte `offset`. Files are laid out
+/// back to back, so the lookup is a binary search; zero-length files never match.
+fn locate(files: &mut [UringFileMapping], offset: u64) -> Option<&mut UringFileMapping> {
+    let idx = files.partition_point(|m| m.end_offset <= offset);
+    files.get_mut(idx).filter(|m| m.start_offset <= offset)
+}
+
 #[async_trait(?Send)]
 impl AsyncDiskIO for UringDisk {
-    async fn write_piece(&mut self, piece_index: u32, mut data: Vec<u8>) -> Result<()> {
+    async fn flush(&mut self) -> Result<()> {
+        for mapping in self.files.iter_mut().filter(|m| m.dirty) {
+            if let Some(file) = mapping.file.as_ref() {
+                file.sync_data().await?;
+            }
+            mapping.dirty = false;
+        }
+        Ok(())
+    }
+
+    async fn set_selection(&mut self, selected: &[bool]) -> Result<()> {
+        for (index, mapping) in self.files.iter_mut().enumerate() {
+            let keep = is_selected(Some(selected), index);
+            match (keep, mapping.file.is_some()) {
+                (true, false) => {
+                    open_preallocated(&mapping.path, mapping.end_offset - mapping.start_offset)?;
+                    mapping.file = Some(open_uring(&mapping.path).await?);
+                }
+                (false, true) => {
+                    // Data already on disk stays there; the handle is just released.
+                    if let Some(file) = mapping.file.take() {
+                        file.sync_data().await?;
+                        file.close().await?;
+                    }
+                    mapping.dirty = false;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    async fn write_piece(&mut self, piece_index: u32, data: Vec<u8>) -> Result<()> {
         let piece_offset = (piece_index as u64) * (self.piece_length as u64);
         let mut written = 0;
 
         while written < data.len() {
             let current_abs_offset = piece_offset + written as u64;
 
-            if let Some(mapping) = self
-                .files
-                .iter_mut()
-                .find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset)
-            {
+            if let Some(mapping) = locate(&mut self.files, current_abs_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
 
-                let slice = data[written..written + to_write].to_vec();
-                let (res, returned_buf) = mapping.file.write_at(slice, file_offset).await;
-                res?;
+                if let Some(file) = mapping.file.as_ref() {
+                    let slice = data[written..written + to_write].to_vec();
+                    write_fully(file, slice, file_offset).await?;
+                    mapping.dirty = true;
+                }
 
                 written += to_write;
             } else {
@@ -144,20 +201,19 @@ impl AsyncDiskIO for UringDisk {
         while read < len as usize {
             let current_abs_offset = absolute_offset + read as u64;
 
-            if let Some(mapping) = self
-                .files
-                .iter_mut()
-                .find(|m| current_abs_offset >= m.start_offset && current_abs_offset < m.end_offset)
-            {
+            if let Some(mapping) = locate(&mut self.files, current_abs_offset) {
                 let file_offset = current_abs_offset - mapping.start_offset;
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
 
-                let buffer = vec![0u8; to_read];
-                let (res, buffer) = mapping.file.read_at(buffer, file_offset).await;
-                res?;
-
-                final_buffer.extend_from_slice(&buffer);
+                // Files that are not downloaded read as zeros.
+                match mapping.file.as_ref() {
+                    Some(file) => {
+                        let buffer = read_fully(file, to_read, file_offset).await?;
+                        final_buffer.extend_from_slice(&buffer);
+                    }
+                    None => final_buffer.resize(final_buffer.len() + to_read, 0),
+                }
                 read += to_read;
             } else {
                 anyhow::bail!("piece offset out of bounds for read");

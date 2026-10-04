@@ -53,6 +53,10 @@ pub struct ResponseArgs {
     #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<u8>,
 
+    /// Compact IPv6 nodes (BEP 32).
+    #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes6: Vec<u8>,
+
     #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
     pub token: Vec<u8>,
 
@@ -141,15 +145,19 @@ mod tests {
             ResponseArgs {
                 id: vec![3; 20],
                 nodes: vec![],
+                nodes6: vec![1; 38],
                 token: b"tok".to_vec(),
                 values: vec![serde_bytes::ByteBuf::from(vec![1, 2, 3, 4, 0x1A, 0xE1])],
             },
         );
         let bytes = serde_bencode::to_bytes(&msg).unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("5:nodes"));
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        assert!(!text.contains("5:nodes"));
+        assert!(text.contains("6:nodes6"));
         let parsed: KrpcMessage = serde_bencode::from_bytes(&bytes).unwrap();
         let r = parsed.r.unwrap();
         assert_eq!(r.token, b"tok");
+        assert_eq!(r.nodes6.len(), 38);
         assert_eq!(r.values.len(), 1);
         assert_eq!(parsed.y, "r");
     }

@@ -12,6 +12,7 @@ use tokio::time::Duration;
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::coordinator::{self, CoordinatorMsg};
+#[cfg(not(target_os = "linux"))]
 use crate::core::disk::StandardDisk;
 use crate::core::disk_io::AsyncDiskIO;
 #[cfg(target_os = "linux")]
@@ -65,7 +66,7 @@ fn file_picker(
     files: &[crate::core::torrent::TorrentFile],
     session: &TorrentSessionState,
 ) -> Option<Vec<bool>> {
-    let editable = !session.swarm_started && !session.is_shutting_down;
+    let editable = !session.is_shutting_down;
     let mut flags = session
         .selection
         .lock()
@@ -101,8 +102,8 @@ fn file_picker(
                     }
                 });
         });
-        if !editable {
-            ui.label("The selection is fixed once the download has started.");
+        if session.swarm_started {
+            ui.label("Files added now are downloaded from the start; pieces shared with them are fetched again.");
         }
     });
 
@@ -628,6 +629,7 @@ fn background_task(
         let meta_name = meta.name.clone();
         let meta_piece_length = meta.piece_length;
         let meta_pieces_c = meta.pieces.clone();
+        let chosen_files_c = chosen_files.clone();
 
         let ui_async_tx_c = ui_async_tx.clone();
         let shutdown_rx_c = shutdown_tx.subscribe();
@@ -637,12 +639,13 @@ fn background_task(
         std::thread::spawn(move || {
             let _done = DoneOnDrop(coord_done_tx);
             tokio_uring::start(async move {
-                match UringDisk::init(
+                match UringDisk::init_with_selection(
                     &output_dir_c,
                     total_size,
                     meta_piece_length,
                     meta_files.as_ref(),
                     &meta_name,
+                    chosen_files_c.as_deref(),
                 )
                 .await
                 {
@@ -710,8 +713,43 @@ fn background_task(
         .await;
     });
 
+    // The selection the coordinator currently works with.
+    let mut current_flags: Vec<bool> = chosen_files
+        .clone()
+        .or_else(|| meta.files.as_ref().map(|files| vec![true; files.len()]))
+        .unwrap_or_default();
+
     while let Ok(command) = command_rx.recv() {
         match command {
+            CoreCommand::SelectionChanged => {
+                let Some(files) = meta.files.as_ref() else {
+                    continue;
+                };
+                let requested =
+                    selection.lock().unwrap().clone().filter(|flags| {
+                        flags.len() == files.len() && flags.iter().any(|keep| *keep)
+                    });
+                let Some(after) = requested else { continue };
+                if after == current_flags {
+                    continue;
+                }
+
+                let pieces = meta.pieces.len();
+                let refetch = Selection::pieces_to_refetch(
+                    files,
+                    &current_flags,
+                    &after,
+                    meta.piece_length,
+                    pieces,
+                );
+                let new_selection = Selection::from_files(files, &after, meta.piece_length, pieces);
+                let _ = coord_tx_for_cmd.blocking_send(CoordinatorMsg::SetSelection {
+                    selection: new_selection,
+                    selected_files: after.clone(),
+                    refetch,
+                });
+                current_flags = after;
+            }
             CoreCommand::StopAll => {
                 tx.send((
                     session_id,
@@ -1345,6 +1383,11 @@ impl eframe::App for TorTorApp {
                                 if let Some(files) = &meta.files {
                                     if let Some(flags) = file_picker(ui, id, files, session) {
                                         selection_update = Some((session.source.clone(), flags));
+                                        if session.swarm_started {
+                                            let _ = session
+                                                .command_tx
+                                                .send(CoreCommand::SelectionChanged);
+                                        }
                                     }
                                 }
                             }

@@ -206,6 +206,7 @@ pub async fn run_swarm_manager(
                 match event {
                     crate::core::command::SessionEvent::ActivePeersSnapshot(_) => {} // Handled elsewhere or not needed here
                     crate::core::command::SessionEvent::PieceCompleted(_) => {}
+                    crate::core::command::SessionEvent::SelectionChanged => {}
                     crate::core::command::SessionEvent::DownloadComplete => {
                         tracing::info!("Swarm received DownloadComplete. Forcing tracker announce with event=completed");
                         swarm_state.event = Some("completed".to_string());

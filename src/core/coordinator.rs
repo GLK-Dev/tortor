@@ -10,6 +10,7 @@ use crate::core::disk_io::AsyncDiskIO;
 use crate::core::manager::TorrentManager;
 use crate::core::metadata_assembler::MetadataAssembler;
 use crate::core::resume::{save_fastresume, FastResumeState};
+use crate::core::selection::Selection;
 
 /// Progress is persisted at most this often while downloading.
 const RESUME_PERSIST_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
@@ -40,6 +41,15 @@ pub enum CoordinatorMsg {
     MetadataPieceFailed(u32),
     Pause,
     Resume,
+    /// Switches the downloaded files while the torrent is running.
+    SetSelection {
+        selection: Selection,
+        /// Per-file flags for the disk backend.
+        selected_files: Vec<bool>,
+        /// Pieces that must be downloaded again (they were stored without a
+        /// file that is selected now).
+        refetch: Bitfield,
+    },
 }
 
 pub enum CoordinatorState {
@@ -409,6 +419,67 @@ pub async fn run_coordinator(
             }
             CoordinatorMsg::MetadataPieceFailed(_index) => {
                 // Next tick will just request it again
+            }
+            CoordinatorMsg::SetSelection {
+                selection,
+                selected_files,
+                refetch,
+            } => {
+                let (manager, disk_writer) = match &mut state {
+                    CoordinatorState::DownloadingData {
+                        manager,
+                        disk_writer,
+                        ..
+                    }
+                    | CoordinatorState::CheckingFiles {
+                        manager,
+                        disk_writer,
+                        ..
+                    } => (manager, disk_writer),
+                    CoordinatorState::DownloadingMetadata { .. } => continue,
+                };
+
+                if let Err(err) = disk_writer.set_selection(&selected_files).await {
+                    error!("failed to change the file selection: {}", err);
+                    let _ = ui_sender
+                        .send(CoreMessage::Error(format!(
+                            "Failed to change the file selection: {err}"
+                        )))
+                        .await;
+                    continue;
+                }
+                manager.apply_selection(selection, &refetch);
+                let _ = ui_sender
+                    .send(CoreMessage::GlobalProgress(manager.progress()))
+                    .await;
+                let _ = ui_sender
+                    .send(CoreMessage::Status("File selection updated".to_string()))
+                    .await;
+
+                if let CoordinatorState::DownloadingData {
+                    manager,
+                    disk_writer,
+                    has_completed,
+                    ..
+                } = &mut state
+                {
+                    if let Err(err) = disk_writer.flush().await {
+                        error!("failed to flush piece data: {}", err);
+                    } else if let Err(err) = persist_resume(&resume_path, manager).await {
+                        error!("failed to persist fastresume: {}", err);
+                    }
+
+                    let done = manager.is_done();
+                    if done && !*has_completed {
+                        let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+                        let _ =
+                            announce_tx.send(crate::core::command::SessionEvent::DownloadComplete);
+                    } else if !done {
+                        let _ =
+                            announce_tx.send(crate::core::command::SessionEvent::SelectionChanged);
+                    }
+                    *has_completed = done;
+                }
             }
             CoordinatorMsg::Pause => {
                 if let CoordinatorState::DownloadingData { paused, .. } = &mut state {

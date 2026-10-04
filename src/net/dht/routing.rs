@@ -42,6 +42,38 @@ pub struct Contact {
     pub addr: SocketAddr,
 }
 
+/// Compact IPv4 node list: 20-byte id, 4-byte address, 2-byte port per entry.
+pub fn decode_compact_nodes(bytes: &[u8]) -> Vec<Contact> {
+    bytes
+        .chunks_exact(26)
+        .filter_map(|chunk| {
+            let addr = crate::net::pex::decode_compact_ipv4(&chunk[20..26])
+                .into_iter()
+                .next()?;
+            Some(Contact {
+                id: NodeId(chunk[..20].try_into().ok()?),
+                addr,
+            })
+        })
+        .collect()
+}
+
+/// Compact IPv6 node list (BEP 32): 20-byte id, 16-byte address, 2-byte port.
+pub fn decode_compact_nodes6(bytes: &[u8]) -> Vec<Contact> {
+    bytes
+        .chunks_exact(38)
+        .filter_map(|chunk| {
+            let addr = crate::net::pex::decode_compact_ipv6(&chunk[20..38])
+                .into_iter()
+                .next()?;
+            Some(Contact {
+                id: NodeId(chunk[..20].try_into().ok()?),
+                addr,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct KBucket {
     pub nodes: Vec<Contact>,
@@ -120,10 +152,21 @@ impl RoutingTable {
 
     /// Up to `count` known contacts closest to `target` by XOR distance.
     pub fn closest(&self, target: &NodeId, count: usize) -> Vec<Contact> {
+        self.closest_where(target, count, |_| true)
+    }
+
+    /// Like `closest`, but only among contacts accepted by `keep` (e.g. one IP family).
+    pub fn closest_where(
+        &self,
+        target: &NodeId,
+        count: usize,
+        keep: impl Fn(&Contact) -> bool,
+    ) -> Vec<Contact> {
         let mut all: Vec<Contact> = self
             .buckets
             .iter()
             .flat_map(|bucket| bucket.nodes.iter().cloned())
+            .filter(|contact| keep(contact))
             .collect();
         all.sort_by_key(|contact| contact.id.xor(target));
         all.truncate(count);
@@ -188,6 +231,47 @@ impl RoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_node_lists_decode_both_families() {
+        let mut v4 = vec![7u8; 20];
+        v4.extend_from_slice(&[10, 0, 0, 1, 0x1A, 0xE1]);
+        let contacts = decode_compact_nodes(&v4);
+        assert_eq!(contacts[0].addr.to_string(), "10.0.0.1:6881");
+        assert_eq!(contacts[0].id, NodeId([7; 20]));
+
+        let mut v6 = vec![9u8; 20];
+        v6.extend_from_slice(
+            &"2001:db8::5"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets(),
+        );
+        v6.extend_from_slice(&6881u16.to_be_bytes());
+        let contacts = decode_compact_nodes6(&v6);
+        assert_eq!(contacts[0].addr.to_string(), "[2001:db8::5]:6881");
+
+        // A truncated trailing entry is ignored.
+        assert!(decode_compact_nodes(&v4[..25]).is_empty());
+        assert!(decode_compact_nodes6(&v6[..37]).is_empty());
+    }
+
+    #[test]
+    fn closest_where_filters_by_predicate() {
+        let mut table = RoutingTable::new(NodeId([0; 20]));
+        for (i, addr) in ["10.0.0.1:1", "[2001:db8::1]:1", "10.0.0.2:1"]
+            .iter()
+            .enumerate()
+        {
+            table.insert(Contact {
+                id: NodeId([i as u8 + 1; 20]),
+                addr: addr.parse().unwrap(),
+            });
+        }
+        let v6 = table.closest_where(&NodeId([0; 20]), 8, |c| c.addr.is_ipv6());
+        assert_eq!(v6.len(), 1);
+        assert_eq!(table.closest(&NodeId([0; 20]), 8).len(), 3);
+    }
 
     #[test]
     fn test_leading_zeros() {

@@ -11,4 +11,11 @@ pub trait AsyncDiskIO {
     async fn flush(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// Changes which files are stored (`selected[i]` for file `i`): newly
+    /// selected files are created, released ones keep their data on disk but
+    /// are no longer read or written.
+    async fn set_selection(&mut self, _selected: &[bool]) -> Result<()> {
+        Ok(())
+    }
 }

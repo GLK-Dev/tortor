@@ -157,10 +157,36 @@ impl TorrentManager {
         *holders -= 1;
         if *holders == 0 {
             self.in_progress.remove(&piece_index);
-            if !self.completed.contains(&piece_index) {
+            if !self.completed.contains(&piece_index) && self.is_wanted(piece_index) {
                 self.missing.push_back(piece_index);
             }
         }
+    }
+
+    /// Switches to a new file selection. Pieces in `refetch` lose their
+    /// completed state so they are downloaded again.
+    pub fn apply_selection(&mut self, selection: Selection, refetch: &Bitfield) {
+        for piece in refetch.iter_ones() {
+            self.completed.remove(&(piece as u32));
+        }
+        self.selection = selection;
+
+        self.wanted_total = (0..self.total_pieces)
+            .filter(|p| self.selection.wanted.has(*p as usize))
+            .count() as u32;
+        self.wanted_completed = self
+            .completed
+            .iter()
+            .filter(|p| self.selection.wanted.has(**p as usize))
+            .count() as u32;
+        self.missing = (0..self.total_pieces)
+            .filter(|p| {
+                self.selection.wanted.has(*p as usize)
+                    && !self.completed.contains(p)
+                    && !self.in_progress.contains_key(p)
+            })
+            .collect();
+        self.missing_dirty = false;
     }
 
     pub fn mark_completed(&mut self, piece_index: u32) {
@@ -305,6 +331,53 @@ mod tests {
         assert_eq!(mgr.servable_pieces(), vec![2, 3]);
         assert!(!mgr.is_servable(1) && mgr.is_servable(2));
         assert_eq!(mgr.completed_count(), 3);
+    }
+
+    #[test]
+    fn changing_the_selection_refetches_newly_needed_pieces() {
+        use crate::core::torrent::TorrentFile;
+        let files = [
+            TorrentFile {
+                length: 15,
+                path: vec!["a".into()],
+            },
+            TorrentFile {
+                length: 25,
+                path: vec!["b".into()],
+            },
+        ];
+        // Start with only the second file: pieces 1..=3 downloaded.
+        let before = Selection::from_files(&files, &[false, true], 10, 4);
+        let mut mgr = TorrentManager::with_selection(4, &[], before);
+        for piece in [1, 2, 3] {
+            mgr.mark_completed(piece);
+        }
+        assert!(mgr.is_done());
+
+        // Now select the first file too: pieces 0 and 1 are needed, and piece 1
+        // (done earlier) lacks the bytes of the first file.
+        let after = Selection::from_files(&files, &[true, true], 10, 4);
+        let refetch = Selection::pieces_to_refetch(&files, &[false, true], &[true, true], 10, 4);
+        mgr.apply_selection(after, &refetch);
+
+        assert!(!mgr.is_done());
+        assert!(mgr.progress() > 0.0 && mgr.progress() < 1.0);
+        assert!(mgr.is_servable(2));
+
+        // Pieces 0 and 1 are queued again; 2 and 3 stay complete.
+        let mut todo = vec![
+            mgr.next_work_for(&all(4)).unwrap(),
+            mgr.next_work_for(&all(4)).unwrap(),
+        ];
+        todo.sort_unstable();
+        assert_eq!(todo, vec![0, 1]);
+
+        // Narrowing to the first file drops pieces 2 and 3 from the work list.
+        mgr.return_work(0);
+        mgr.return_work(1);
+        let narrow = Selection::from_files(&files, &[true, false], 10, 4);
+        mgr.apply_selection(narrow, &Bitfield::new(4));
+        assert_eq!(mgr.next_work_for(&Bitfield::from_indices(4, [2, 3])), None);
     }
 
     #[test]

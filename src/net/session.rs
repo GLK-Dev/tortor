@@ -342,6 +342,14 @@ impl PeerSession<'_, '_> {
                     self.job = None;
                 }
             }
+            SessionEvent::SelectionChanged => {
+                // Files were added to the selection, so there is something to ask for again.
+                if !self.am_interested {
+                    PeerMessage::send_interested(&mut *self.stream).await?;
+                    self.am_interested = true;
+                }
+                self.next_work_poll = Instant::now();
+            }
             SessionEvent::DownloadComplete => {
                 if self.am_interested {
                     let _ = PeerMessage::send_not_interested(&mut *self.stream).await;

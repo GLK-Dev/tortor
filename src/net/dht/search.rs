@@ -1,9 +1,10 @@
+use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use crate::net::dht::krpc::{KrpcMessage, QueryArgs};
-use crate::net::dht::routing::{Contact, NodeId};
+use crate::net::dht::routing::{decode_compact_nodes, decode_compact_nodes6, Contact, NodeId};
 use crate::net::dht::server::DhtCommand;
 use crate::net::swarm::SwarmEvent;
 
@@ -133,52 +134,39 @@ impl DhtSearch {
 
                             if let Some(resp_args) = response.r {
                                 sc.token = resp_args.token.clone();
-                                if !resp_args.values.is_empty() {
-                                    let mut peers = Vec::new();
-                                    for peer_buf in resp_args.values {
-                                        peers.extend(crate::net::pex::decode_compact_ipv4(
-                                            peer_buf.as_ref(),
-                                        ));
-                                    }
-                                    if !peers.is_empty() {
-                                        info!(
-                                            "DHT found {} peers for {:?}",
-                                            peers.len(),
-                                            self.info_hash
-                                        );
-                                        let _ =
-                                            self.swarm_tx.send(SwarmEvent::DhtPeersReceived(peers));
-                                    }
+                                let peers: Vec<SocketAddr> = resp_args
+                                    .values
+                                    .iter()
+                                    .flat_map(|value| {
+                                        crate::net::pex::decode_compact_peers(value.as_ref())
+                                    })
+                                    .collect();
+                                if !peers.is_empty() {
+                                    info!(
+                                        "DHT found {} peers for {:?}",
+                                        peers.len(),
+                                        self.info_hash
+                                    );
+                                    let _ = self.swarm_tx.send(SwarmEvent::DhtPeersReceived(peers));
                                 }
 
-                                if !resp_args.nodes.is_empty() {
-                                    for chunk in resp_args.nodes.chunks_exact(26) {
-                                        let mut id = [0u8; 20];
-                                        id.copy_from_slice(&chunk[0..20]);
-                                        let addrs_part =
-                                            crate::net::pex::decode_compact_ipv4(&chunk[20..26]);
-                                        if let Some(addr) = addrs_part
-                                            .into_iter()
-                                            .next()
-                                            .filter(crate::net::dht::server::is_valid_node_addr)
+                                let mut found = decode_compact_nodes(&resp_args.nodes);
+                                found.extend(decode_compact_nodes6(&resp_args.nodes6));
+                                if !found.is_empty() {
+                                    for contact in found.into_iter().filter(|c| {
+                                        crate::net::dht::server::is_valid_node_addr(&c.addr)
+                                    }) {
+                                        let _ = self.manager_tx.send(crate::net::dht::actor::DhtManagerCommand::InsertNode(contact.clone())).await;
+                                        if !self
+                                            .short_list
+                                            .iter()
+                                            .any(|existing| existing.contact.id == contact.id)
                                         {
-                                            let contact = Contact {
-                                                id: NodeId(id),
-                                                addr,
-                                            };
-
-                                            let _ = self.manager_tx.send(crate::net::dht::actor::DhtManagerCommand::InsertNode(contact.clone())).await;
-                                            if !self
-                                                .short_list
-                                                .iter()
-                                                .any(|existing| existing.contact.id == contact.id)
-                                            {
-                                                self.short_list.push(SearchContact {
-                                                    contact,
-                                                    state: NodeState::Unqueried,
-                                                    token: Vec::new(),
-                                                });
-                                            }
+                                            self.short_list.push(SearchContact {
+                                                contact,
+                                                state: NodeState::Unqueried,
+                                                token: Vec::new(),
+                                            });
                                         }
                                     }
                                     self.short_list

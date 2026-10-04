@@ -68,6 +68,16 @@ pub fn decode_compact_ipv4(bytes: &[u8]) -> Vec<SocketAddr> {
         .collect()
 }
 
+/// One DHT `values` entry: 6 bytes for an IPv4 peer, 18 for an IPv6 peer.
+/// Several concatenated IPv4 peers are accepted as well.
+pub fn decode_compact_peers(bytes: &[u8]) -> Vec<SocketAddr> {
+    if bytes.len() == 18 {
+        decode_compact_ipv6(bytes)
+    } else {
+        decode_compact_ipv4(bytes)
+    }
+}
+
 pub fn decode_compact_ipv6(bytes: &[u8]) -> Vec<SocketAddr> {
     bytes
         .chunks_exact(18)

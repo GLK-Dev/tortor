@@ -9,6 +9,8 @@ pub enum CoreCommand {
     StopAll,
     Pause,
     Resume,
+    /// The file selection handle of the session changed; apply it.
+    SelectionChanged,
     Remove(bool),
 }
 
@@ -47,4 +49,6 @@ pub enum SessionEvent {
     PieceCompleted(u32),
     ActivePeersSnapshot(Vec<std::net::SocketAddr>),
     DownloadComplete,
+    /// More pieces are wanted now (files were added to the selection).
+    SelectionChanged,
 }

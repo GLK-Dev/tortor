@@ -563,3 +563,55 @@ async fn only_selected_files_are_downloaded() {
 
     finish(vec![seeder, leecher], shutdown_tx);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn selection_can_grow_while_connected() {
+    use tortor::core::coordinator::CoordinatorMsg;
+
+    let data = test_data();
+    let (shutdown_tx, _) = broadcast::channel::<()>(4);
+
+    let first_len = 70_000u64;
+    let files = [
+        TorrentFile {
+            length: first_len,
+            path: vec!["a".into()],
+        },
+        TorrentFile {
+            length: data.len() as u64 - first_len,
+            path: vec!["b".into()],
+        },
+    ];
+    let pieces = PIECES as usize;
+    let only_b = Selection::from_files(&files, &[false, true], PIECE_LENGTH, pieces);
+
+    let seeder = spawn_node("grow-seed", &data, &all_pieces(), &shutdown_tx);
+    let mut leecher = spawn_node_with("grow-leech", &data, &[], Some(only_b), &shutdown_tx);
+    connect(&leecher, &seeder, &shutdown_tx).await;
+
+    wait_for_complete(&mut leecher).await;
+    let piece = PIECE_LENGTH as usize;
+    assert!(leecher.disk.lock().unwrap()[..2 * piece]
+        .iter()
+        .all(|&b| b == 0));
+
+    // Add the first file: its pieces (0..=2, piece 2 is shared) are fetched now.
+    let refetch =
+        Selection::pieces_to_refetch(&files, &[false, true], &[true, true], PIECE_LENGTH, pieces);
+    assert_eq!(refetch.iter_ones().collect::<Vec<_>>(), vec![0, 1, 2]);
+    leecher
+        .ctx
+        .coord_sender
+        .send(CoordinatorMsg::SetSelection {
+            selection: Selection::all(pieces),
+            selected_files: vec![true, true],
+            refetch,
+        })
+        .await
+        .unwrap();
+
+    wait_for_complete(&mut leecher).await;
+    assert_eq!(*leecher.disk.lock().unwrap(), data);
+
+    finish(vec![seeder, leecher], shutdown_tx);
+}

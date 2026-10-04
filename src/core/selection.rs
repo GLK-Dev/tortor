@@ -52,6 +52,49 @@ impl Selection {
         Self { wanted, unservable }
     }
 
+    /// Pieces that overlap at least one file whose flag is `true`.
+    pub fn pieces_of_files(
+        files: &[TorrentFile],
+        flags: &[bool],
+        piece_length: u32,
+        total_pieces: usize,
+    ) -> Bitfield {
+        let mut pieces = Bitfield::new(total_pieces);
+        let piece_length = piece_length.max(1) as u64;
+
+        let mut offset = 0u64;
+        for (file, &flag) in files.iter().zip(flags) {
+            if flag && file.length > 0 {
+                let first = (offset / piece_length) as usize;
+                let last = ((offset + file.length - 1) / piece_length) as usize;
+                for piece in first..=last.min(total_pieces.saturating_sub(1)) {
+                    pieces.set(piece);
+                }
+            }
+            offset += file.length;
+        }
+        pieces
+    }
+
+    /// Pieces that must be downloaded again when `after` replaces `before`:
+    /// every piece that overlaps a file that was skipped and is now selected.
+    /// Such a piece may already be complete, but the bytes of the skipped file
+    /// were discarded when it was written.
+    pub fn pieces_to_refetch(
+        files: &[TorrentFile],
+        before: &[bool],
+        after: &[bool],
+        piece_length: u32,
+        total_pieces: usize,
+    ) -> Bitfield {
+        let newly_selected: Vec<bool> = before
+            .iter()
+            .zip(after)
+            .map(|(was, now)| !*was && *now)
+            .collect();
+        Self::pieces_of_files(files, &newly_selected, piece_length, total_pieces)
+    }
+
     /// True when everything is downloaded and stored.
     pub fn is_all(&self) -> bool {
         self.wanted.count() == self.wanted.len() && self.unservable.count() == 0
@@ -110,6 +153,17 @@ mod tests {
 
         let both = Selection::from_files(&files, &[true, true], 10, total_pieces);
         assert!(both.is_all());
+    }
+
+    #[test]
+    fn newly_selected_files_force_a_refetch_of_their_pieces() {
+        let files = [file(15), file(25)];
+        let refetch = Selection::pieces_to_refetch(&files, &[true, false], &[true, true], 10, 4);
+        // File 2 covers pieces 1..=3.
+        assert_eq!(refetch.iter_ones().collect::<Vec<_>>(), vec![1, 2, 3]);
+
+        let none = Selection::pieces_to_refetch(&files, &[true, true], &[true, false], 10, 4);
+        assert_eq!(none.count(), 0);
     }
 
     #[test]
