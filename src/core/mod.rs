@@ -7,6 +7,8 @@ pub mod disk;
 pub mod disk_io;
 #[cfg(target_os = "linux")]
 pub mod disk_uring;
+#[cfg(target_os = "haiku")]
+pub mod disk_bfs;
 pub mod fsutil;
 pub mod manager;
 pub mod metadata_assembler;

@@ -377,7 +377,18 @@ pub async fn run_coordinator(
                     .await
                     .map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
 
-                    #[cfg(not(target_os = "linux"))]
+                    #[cfg(target_os = "haiku")]
+                    let disk_writer_res = crate::core::disk_bfs::BfsDirectDisk::init(
+                        &output_dir,
+                        total_size,
+                        meta.piece_length,
+                        meta.files.as_ref(),
+                        &meta.name,
+                    )
+                    .await
+                    .map(|d| Box::new(d) as Box<dyn AsyncDiskIO>);
+
+                    #[cfg(not(any(target_os = "linux", target_os = "haiku")))]
                     let disk_writer_res = crate::core::disk::StandardDisk::init(
                         &output_dir,
                         total_size,

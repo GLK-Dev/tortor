@@ -12,8 +12,10 @@ use tokio::time::Duration;
 use crate::core::bencode;
 use crate::core::command::{CoreCommand, CoreMessage, SessionTelemetry};
 use crate::core::coordinator::{self, CoordinatorMsg};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "haiku")))]
 use crate::core::disk::StandardDisk;
+#[cfg(target_os = "haiku")]
+use crate::core::disk_bfs::BfsDirectDisk;
 use crate::core::disk_io::AsyncDiskIO;
 #[cfg(target_os = "linux")]
 use crate::core::disk_uring::UringDisk;
@@ -565,7 +567,7 @@ fn background_task(
     // Signalled when the coordinator thread ends, i.e. after its final flush.
     let (coord_done_tx, coord_done_rx) = mpsc::channel::<()>();
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "haiku")))]
     {
         let output_dir_c = output_dir.clone();
         let meta_files = meta.files.clone();
@@ -621,6 +623,71 @@ fn background_task(
                         let _ = ui_async_tx_c
                             .send(CoreMessage::Error(format!(
                                 "Failed to init StandardDisk: {}",
+                                e
+                            )))
+                            .await;
+                    }
+                }
+            });
+        });
+    }
+
+    #[cfg(target_os = "haiku")]
+    {
+        let output_dir_c = output_dir.clone();
+        let meta_files = meta.files.clone();
+        let meta_name = meta.name.clone();
+        let meta_piece_length = meta.piece_length;
+        let meta_pieces_c = meta.pieces.clone();
+        let chosen_files_c = chosen_files.clone();
+
+        let ui_async_tx_c = ui_async_tx.clone();
+        let shutdown_rx_c = shutdown_tx.subscribe();
+        let announce_tx_c = announce_tx.clone();
+        let resume_path_c = resume_path.clone();
+
+        std::thread::spawn(move || {
+            let _done = DoneOnDrop(coord_done_tx);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                match BfsDirectDisk::init_with_selection(
+                    &output_dir_c,
+                    total_size,
+                    meta_piece_length,
+                    meta_files.as_ref(),
+                    &meta_name,
+                    chosen_files_c.as_deref(),
+                )
+                .await
+                {
+                    Ok(disk_writer) => {
+                        let disk_writer = Box::new(disk_writer) as Box<dyn AsyncDiskIO>;
+                        let state = initial_coordinator_state(
+                            manager,
+                            disk_writer,
+                            requires_check,
+                            meta_pieces_c,
+                            meta_piece_length,
+                            total_size,
+                            start_paused,
+                        );
+                        coordinator::run_coordinator(
+                            coord_rx,
+                            ui_async_tx_c,
+                            state,
+                            resume_path_c,
+                            shutdown_rx_c,
+                            announce_tx_c,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        let _ = ui_async_tx_c
+                            .send(CoreMessage::Error(format!(
+                                "Failed to init BfsDirectDisk: {}",
                                 e
                             )))
                             .await;

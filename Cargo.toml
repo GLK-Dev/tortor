@@ -65,4 +65,5 @@ winres = "0.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-uring = "0.4.0"
 
-
+[target.'cfg(target_os = "haiku")'.dependencies]
+heos_fs = { path = "../HeOS/haiku-master/sdk/heos_fs/bindings" }
