@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tortor::net::dht::actor::{DhtManager, DhtManagerCommand};

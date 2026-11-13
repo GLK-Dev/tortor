@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::time::{Duration, Instant};
 
 const BLOCK_SIZE: u32 = 16 * 1024;

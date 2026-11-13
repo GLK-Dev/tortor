@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end transfer tests: real coordinators and peer sessions talking over
 //! loopback TCP, with in-memory disks.
 

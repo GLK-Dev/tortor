@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! UPnP port mapping so peers behind a NAT router can reach our listeners.
 
 use std::net::{IpAddr, SocketAddr};

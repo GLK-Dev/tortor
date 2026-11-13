@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;

@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Fixed-size set of piece indices, stored in BitTorrent wire order
 /// (most significant bit of the first byte is piece 0).
 #[derive(Debug, Clone, PartialEq, Eq)]

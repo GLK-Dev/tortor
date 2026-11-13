@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Filesystem helpers: crash-safe writes and per-user application directories.
 
 use std::ffi::OsString;

@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Checks whether a UPnP router can be found and forwards a port.
 
 use std::sync::Arc;

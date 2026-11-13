@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::net::SocketAddr;

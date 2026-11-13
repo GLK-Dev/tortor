@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::net::SocketAddr;
 
 use crate::core::torrent::TorrentMeta;

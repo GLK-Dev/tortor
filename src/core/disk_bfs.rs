@@ -1,13 +1,17 @@
-/! BFS Direct-IO disk backend; compiled on Haiku / HeOS only (see `core/mod.rs`).
+﻿// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! BFS Direct-IO disk backend; compiled on Haiku / HeOS only (see `core/mod.rs`).
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use async_trait::async_trait;
-use heos_fs::{HeosFile, HEOS_FS_CREATE, HEOS_FS_DIRECT_IO, HEOS_FS_READ, HEOS_FS_WRITE};
+use tracing::{debug, info, warn};
 
 use crate::core::disk::{is_selected, plan_files};
 use crate::core::disk_io::AsyncDiskIO;
+use crate::core::heos_fs_ffi::{HeosFile, HEOS_FS_CREATE, HEOS_FS_DIRECT_IO, HEOS_FS_READ, HEOS_FS_WRITE};
 use crate::core::torrent::TorrentFile;
 
 pub struct BfsFileMapping {
@@ -18,6 +22,8 @@ pub struct BfsFileMapping {
     pub end_offset: u64,
     /// Written since the last `flush`.
     pub dirty: bool,
+    /// The handle was opened with O_DIRECT. Cleared after a fallback to buffered I/O.
+    pub direct: bool,
 }
 
 pub struct BfsDirectDisk {
@@ -27,7 +33,7 @@ pub struct BfsDirectDisk {
 
 fn open_bfs_preallocated(path: &Path, length: u64) -> Result<HeosFile> {
     if let Some(parent) = path.parent() {
-        let _ = heos_fs::HeosFile::create_dir_all(parent);
+        let _ = HeosFile::create_dir_all(parent);
     }
     let file = HeosFile::open(
         path,
@@ -37,6 +43,11 @@ fn open_bfs_preallocated(path: &Path, length: u64) -> Result<HeosFile> {
 
     file.preallocate(length)
         .with_context(|| format!("failed to preallocate BFS file {}", path.display()))?;
+
+    info!(
+        "[HeOS BFS Direct-IO] Initialized and preallocated {:?} ({} bytes) with O_DIRECT flags",
+        path, length
+    );
 
     Ok(file)
 }
@@ -71,7 +82,7 @@ impl BfsDirectDisk {
             }]
         });
 
-        let _ = heos_fs::HeosFile::create_dir_all(base_dir);
+        let _ = HeosFile::create_dir_all(base_dir);
 
         let mut files = Vec::new();
         for (index, plan) in plan_files(base_dir, name, is_multi, &torrent_files)?
@@ -84,14 +95,22 @@ impl BfsDirectDisk {
             } else {
                 None
             };
+            let direct = file.is_some();
             files.push(BfsFileMapping {
                 path: plan.path,
                 file,
                 start_offset: plan.start,
                 end_offset: plan.end,
                 dirty: false,
+                direct,
             });
         }
+
+        info!(
+            "[HeOS BFS Direct-IO] Backend ready with {} file mappings, piece_length={} bytes",
+            files.len(),
+            piece_length
+        );
 
         Ok(Self {
             files,
@@ -107,12 +126,71 @@ fn locate(files: &mut [BfsFileMapping], offset: u64) -> Option<&mut BfsFileMappi
     files.get_mut(idx).filter(|m| m.start_offset <= offset)
 }
 
+/// Reopens the file without O_DIRECT. The new handle is opened before the old one is
+/// replaced, so a failure leaves the mapping usable.
+fn reopen_buffered(mapping: &mut BfsFileMapping) -> Result<()> {
+    let file = HeosFile::open(&mapping.path, HEOS_FS_READ | HEOS_FS_WRITE)
+        .with_context(|| format!("failed to reopen {} without O_DIRECT", mapping.path.display()))?;
+    mapping.file = Some(file);
+    mapping.direct = false;
+    Ok(())
+}
+
+/// The SDK falls back to buffered I/O only when `open` fails. A later `pwrite` on an
+/// O_DIRECT handle can still fail (for example on alignment), so retry once through a
+/// buffered handle instead of failing the whole download.
+fn write_with_fallback(mapping: &mut BfsFileMapping, buf: &[u8], offset: u64) -> Result<usize> {
+    let first = match mapping.file.as_ref() {
+        Some(file) => file.write_at(buf, offset),
+        None => bail!("write to a file that is not selected"),
+    };
+    match first {
+        Ok(n) => Ok(n),
+        Err(err) if mapping.direct => {
+            warn!(
+                "[HeOS BFS Direct-IO] O_DIRECT write failed on {:?} ({err:#}); retrying buffered",
+                mapping.path
+            );
+            reopen_buffered(mapping)?;
+            match mapping.file.as_ref() {
+                Some(file) => file.write_at(buf, offset),
+                None => bail!("write to a file that is not selected"),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Read counterpart of `write_with_fallback`.
+fn read_with_fallback(mapping: &mut BfsFileMapping, buf: &mut [u8], offset: u64) -> Result<usize> {
+    let first = match mapping.file.as_ref() {
+        Some(file) => file.read_at(buf, offset),
+        None => bail!("read from a file that is not selected"),
+    };
+    match first {
+        Ok(n) => Ok(n),
+        Err(err) if mapping.direct => {
+            warn!(
+                "[HeOS BFS Direct-IO] O_DIRECT read failed on {:?} ({err:#}); retrying buffered",
+                mapping.path
+            );
+            reopen_buffered(mapping)?;
+            match mapping.file.as_ref() {
+                Some(file) => file.read_at(buf, offset),
+                None => bail!("read from a file that is not selected"),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 #[async_trait(?Send)]
 impl AsyncDiskIO for BfsDirectDisk {
     async fn flush(&mut self) -> Result<()> {
         for mapping in self.files.iter_mut().filter(|m| m.dirty) {
             if let Some(file) = mapping.file.as_ref() {
                 file.flush()?;
+                debug!("[HeOS BFS Direct-IO] Flushed file {:?}", mapping.path);
             }
             mapping.dirty = false;
         }
@@ -127,6 +205,7 @@ impl AsyncDiskIO for BfsDirectDisk {
                     let length = mapping.end_offset - mapping.start_offset;
                     let file = open_bfs_preallocated(&mapping.path, length)?;
                     mapping.file = Some(file);
+                    mapping.direct = true;
                 }
                 (false, true) => {
                     // Data already on disk stays there; the handle is just released.
@@ -153,15 +232,22 @@ impl AsyncDiskIO for BfsDirectDisk {
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
 
-                if let Some(file) = mapping.file.as_ref() {
+                if mapping.file.is_some() {
                     let mut file_done = 0;
                     while file_done < to_write {
                         let slice = &data[written + file_done..written + to_write];
-                        let n = file.write_at(slice, file_offset + file_done as u64)?;
+                        let n = write_with_fallback(mapping, slice, file_offset + file_done as u64)?;
                         ensure!(n > 0, "write returned zero bytes");
                         file_done += n;
                     }
                     mapping.dirty = true;
+                    info!(
+                        "[HeOS BFS Direct-IO] Write piece #{} ({} bytes) at BFS offset {} (O_DIRECT: {})",
+                        piece_index,
+                        to_write,
+                        file_offset,
+                        mapping.direct
+                    );
                 }
 
                 written += to_write;
@@ -188,28 +274,26 @@ impl AsyncDiskIO for BfsDirectDisk {
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
 
-                // Files that are not downloaded read as zeros.
-                match mapping.file.as_ref() {
-                    Some(file) => {
-                        let mut chunk = vec![0u8; to_read];
-                        let mut chunk_done = 0;
-                        while chunk_done < to_read {
-                            let n = file.read_at(
-                                &mut chunk[chunk_done..to_read],
-                                file_offset + chunk_done as u64,
-                            )?;
-                            ensure!(n > 0, "unexpected end of file");
-                            chunk_done += n;
-                        }
-                        final_buffer.extend_from_slice(&chunk);
+                if mapping.file.is_some() {
+                    let mut temp_buf = vec![0u8; to_read];
+                    let mut file_done = 0;
+                    while file_done < to_read {
+                        let n = read_with_fallback(
+                            mapping,
+                            &mut temp_buf[file_done..to_read],
+                            file_offset + file_done as u64,
+                        )?;
+                        ensure!(n > 0, "read returned zero bytes before EOF");
+                        file_done += n;
                     }
-                    None => {
-                        final_buffer.resize(final_buffer.len() + to_read, 0);
-                    }
+                    final_buffer.extend_from_slice(&temp_buf);
+                } else {
+                    final_buffer.resize(final_buffer.len() + to_read, 0);
                 }
+
                 read += to_read;
             } else {
-                bail!("piece offset out of bounds for read in BfsDirectDisk");
+                bail!("piece offset out of bounds in BfsDirectDisk::read_piece");
             }
         }
 

@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Selective download: which pieces are needed for the chosen files and which
 //! finished pieces cannot be served because part of them was never stored.
 

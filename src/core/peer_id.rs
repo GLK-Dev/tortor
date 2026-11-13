@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn generate_peer_id() -> [u8; 20] {

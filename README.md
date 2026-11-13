@@ -44,6 +44,8 @@ On Windows you can also run `build.bat` (1 = debug build, 2 = release build).
 
 **Linux:** a C compiler is required to build (`ring`). To run the GUI you need an X11 or Wayland session with OpenGL (Mesa) and the usual desktop libraries (`libxkbcommon`, `libxcb`/`libwayland-client`). The file dialog uses the XDG desktop portal. Without the GUI: `cargo build --release --no-default-features`.
 
+**Haiku:** the build links the HeOS SDK (`libheos_fs`, `libheos_net`). Set `HEOS_SDK_LIB_DIR` to the `sdk/lib` directory of the HeOS tree (for example `haiku-master/sdk/lib`). Without it, `/boot/system/develop/lib` and `/boot/system/lib` are searched. The BFS Direct-IO backend is Haiku-only; it is not verified on a real BFS volume yet.
+
 ### Usage
 
 ```text

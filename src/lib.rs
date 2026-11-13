@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Session and swarm entry points take their dependencies as explicit parameters.
 #![allow(clippy::too_many_arguments)]
 

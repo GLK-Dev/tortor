@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fetches the metadata of a magnet link and prints a summary.
 //!
 //! Usage: cargo run --example magnet_fetch -- "magnet:?xt=urn:btih:..."

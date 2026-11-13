@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Application-wide networking: one TCP listener, one QUIC endpoint and one DHT
 //! node shared by every torrent. Torrents register themselves by info hash so
 //! inbound connections reach the right swarm.

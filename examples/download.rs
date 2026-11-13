@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Headless download of a magnet link for a limited time; used to check the
 //! network stack against real swarms.
 //!

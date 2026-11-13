@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Magnet metadata download against a scripted fake peer (BEP 9 / BEP 10).
 
 use std::net::SocketAddr;

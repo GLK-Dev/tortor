@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use sha1::{Digest as _, Sha1};
 use sha2::Sha256;
 

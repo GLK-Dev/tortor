@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #[derive(Debug, Clone)]
 pub struct TorrentFile {
     pub length: u64,

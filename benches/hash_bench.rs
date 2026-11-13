@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use tortor::crypto::dispatch::{hash_piece, HashAlgorithm};
 

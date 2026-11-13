@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Global bandwidth limiting: a token bucket per direction and a stream
 //! wrapper that waits for tokens instead of polling.
 

@@ -1,3 +1,6 @@
+﻿// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Duration;
 
@@ -137,7 +140,7 @@ pub async fn announce(tracker_url: &str, params: &AnnounceParams<'_>) -> Result<
     };
 
     let request_url = format!(
-        "{tracker_url}{separator}info_hash={info_hash_encoded}&peer_id={peer_id_encoded}&port={}&uploaded={}&downloaded={}&left={}&compact=1{event_param}",
+        "{tracker_url}{separator}info_hash={info_hash_encoded}&peer_id={peer_id_encoded}&port={}&uploaded={}&downloaded={}&left={}&compact=1&numwant=50{event_param}",
         params.port, params.uploaded, params.downloaded, params.left
     );
 

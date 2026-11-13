@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Magnet-link metadata download (BEP 9 over the BEP 10 extension protocol).
 
 use std::collections::{HashSet, VecDeque};

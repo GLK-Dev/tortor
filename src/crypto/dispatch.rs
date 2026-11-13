@@ -1,3 +1,6 @@
+// Copyright (c) Vitaly Golik (mjojo)
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use crate::crypto::core;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
