@@ -19,6 +19,7 @@ use hey_widgets::{Button, Checkbox, Label, TextInput, View};
 
 use crate::core::command::{CoreCommand, CoreMessage};
 use crate::core::session_store::{SessionEntry, SessionStore, TorrentSource};
+use crate::core::settings::{apply_runtime_settings, ClientSettings};
 use crate::net::engine::{Engine, EngineOptions};
 use crate::net::portmap::PortMapStatus;
 
@@ -106,6 +107,79 @@ enum InspectorTab {
     Logs,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Network,
+    Connections,
+    Performance,
+}
+
+#[derive(Clone, Debug)]
+struct SettingsDraft {
+    tab: SettingsTab,
+    default_output_dir: Option<PathBuf>,
+    start_paused: bool,
+    compact_ui: bool,
+    language: String,
+    listen_port: String,
+    enable_dht: bool,
+    enable_port_mapping: bool,
+    enable_pex: bool,
+    enable_quic: bool,
+    dl_limit: String,
+    ul_limit: String,
+    max_peers: String,
+    max_inbound: String,
+    upload_slots: String,
+    pipeline_depth: String,
+    connect_timeout: String,
+    resume_interval: String,
+    error: Option<String>,
+}
+
+impl SettingsDraft {
+    fn from_store(store: &SessionStore) -> Self {
+        Self::from_parts(
+            &store.settings,
+            store.download_limit_kib,
+            store.upload_limit_kib,
+            store.language.as_deref().unwrap_or("ru").to_string(),
+            SettingsTab::General,
+        )
+    }
+
+    fn from_parts(
+        s: &ClientSettings,
+        dl_limit_kib: u64,
+        ul_limit_kib: u64,
+        language: String,
+        tab: SettingsTab,
+    ) -> Self {
+        Self {
+            tab,
+            default_output_dir: s.default_output_dir.clone(),
+            start_paused: s.start_paused,
+            compact_ui: s.compact_ui,
+            language,
+            listen_port: s.listen_port.to_string(),
+            enable_dht: s.enable_dht,
+            enable_port_mapping: s.enable_port_mapping,
+            enable_pex: s.enable_pex,
+            enable_quic: s.enable_quic,
+            dl_limit: dl_limit_kib.to_string(),
+            ul_limit: ul_limit_kib.to_string(),
+            max_peers: s.max_peers_per_torrent.to_string(),
+            max_inbound: s.max_inbound_peers.to_string(),
+            upload_slots: s.upload_slots.to_string(),
+            pipeline_depth: s.pipeline_depth.to_string(),
+            connect_timeout: s.connect_timeout_secs.to_string(),
+            resume_interval: s.resume_interval_secs.to_string(),
+            error: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum ActiveModal {
     AddTorrent {
@@ -113,6 +187,7 @@ enum ActiveModal {
         picked_file: Option<PathBuf>,
         output_dir: PathBuf,
         tag: Option<String>,
+        start_paused: bool,
         error: Option<String>,
     },
     ConfirmDelete(usize),
@@ -120,6 +195,7 @@ enum ActiveModal {
         dl_text: String,
         ul_text: String,
     },
+    Settings(SettingsDraft),
     About,
 }
 
@@ -140,6 +216,7 @@ enum Msg {
     PickedOutputDir(Option<PathBuf>),
     AddMagnetText(String),
     SetAddModalTag(Option<&'static str>),
+    SetAddStartPaused(bool),
     ConfirmAddTorrent,
     OpenDeleteModal,
     RemoveFromList(usize),
@@ -148,6 +225,29 @@ enum Msg {
     DlLimitInput(String),
     UlLimitInput(String),
     SaveLimits,
+    OpenSettingsModal,
+    SelectSettingsTab(usize),
+    SettingsPickDir,
+    SettingsPickedDir(Option<PathBuf>),
+    SettingsClearDir,
+    SettingsStartPaused(bool),
+    SettingsCompactUi(bool),
+    SettingsLanguage(&'static str),
+    SettingsListenPort(String),
+    SettingsDht(bool),
+    SettingsUpnp(bool),
+    SettingsPex(bool),
+    SettingsQuic(bool),
+    SettingsDlLimit(String),
+    SettingsUlLimit(String),
+    SettingsMaxPeers(String),
+    SettingsMaxInbound(String),
+    SettingsUploadSlots(String),
+    SettingsPipelineDepth(String),
+    SettingsConnectTimeout(String),
+    SettingsResumeInterval(String),
+    SettingsResetDefaults,
+    SaveSettings,
     OpenAboutModal,
     CloseModal,
     ToggleFile(usize, usize, bool),
@@ -424,6 +524,7 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                 picked_file: None,
                 output_dir: m.default_output_dir.clone(),
                 tag: None,
+                start_paused: m.session_store.settings.start_paused,
                 error: None,
             });
         }
@@ -471,12 +572,18 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                 *cur = tag.map(str::to_string);
             }
         }
+        Msg::SetAddStartPaused(paused) => {
+            if let Some(ActiveModal::AddTorrent { start_paused, .. }) = &mut m.modal {
+                *start_paused = paused;
+            }
+        }
         Msg::ConfirmAddTorrent => {
             let Some(ActiveModal::AddTorrent {
                 magnet_input,
                 picked_file,
                 output_dir,
                 tag,
+                start_paused,
                 ..
             }) = m.modal.clone()
             else {
@@ -508,12 +615,12 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
             m.session_store.entries.push(SessionEntry {
                 source: source.clone(),
                 output_dir: output_dir.clone(),
-                is_paused: false,
+                is_paused: start_paused,
                 selected_files: None,
                 tag: tag.clone(),
             });
             let _ = m.session_store.save_default();
-            m.start_core(source, output_dir, None, tag, false);
+            m.start_core(source, output_dir, None, tag, start_paused);
             m.modal = None;
         }
         Msg::OpenDeleteModal => {
@@ -541,6 +648,65 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
         }
         Msg::OpenAboutModal => {
             m.modal = Some(ActiveModal::About);
+        }
+        Msg::OpenSettingsModal => {
+            m.modal = Some(ActiveModal::Settings(SettingsDraft::from_store(&m.session_store)));
+        }
+        Msg::SelectSettingsTab(idx) => {
+            if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
+                draft.tab = match idx {
+                    1 => SettingsTab::Network,
+                    2 => SettingsTab::Connections,
+                    3 => SettingsTab::Performance,
+                    _ => SettingsTab::General,
+                };
+            }
+        }
+        Msg::SettingsPickDir => {
+            let title = m.i18n.tr("btn-folder");
+            return Command::perform(move || pick_folder(&title), Msg::SettingsPickedDir);
+        }
+        Msg::SettingsPickedDir(Some(dir)) => {
+            if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
+                draft.default_output_dir = Some(dir);
+            }
+        }
+        Msg::SettingsPickedDir(None) => {}
+        Msg::SettingsClearDir => {
+            if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
+                draft.default_output_dir = None;
+            }
+        }
+        Msg::SettingsStartPaused(v) => edit_settings(m, |d| d.start_paused = v),
+        Msg::SettingsCompactUi(v) => edit_settings(m, |d| d.compact_ui = v),
+        Msg::SettingsLanguage(lang) => edit_settings(m, |d| d.language = lang.to_string()),
+        Msg::SettingsListenPort(v) => edit_settings(m, |d| d.listen_port = v),
+        Msg::SettingsDht(v) => edit_settings(m, |d| d.enable_dht = v),
+        Msg::SettingsUpnp(v) => edit_settings(m, |d| d.enable_port_mapping = v),
+        Msg::SettingsPex(v) => edit_settings(m, |d| d.enable_pex = v),
+        Msg::SettingsQuic(v) => edit_settings(m, |d| d.enable_quic = v),
+        Msg::SettingsDlLimit(v) => edit_settings(m, |d| d.dl_limit = v),
+        Msg::SettingsUlLimit(v) => edit_settings(m, |d| d.ul_limit = v),
+        Msg::SettingsMaxPeers(v) => edit_settings(m, |d| d.max_peers = v),
+        Msg::SettingsMaxInbound(v) => edit_settings(m, |d| d.max_inbound = v),
+        Msg::SettingsUploadSlots(v) => edit_settings(m, |d| d.upload_slots = v),
+        Msg::SettingsPipelineDepth(v) => edit_settings(m, |d| d.pipeline_depth = v),
+        Msg::SettingsConnectTimeout(v) => edit_settings(m, |d| d.connect_timeout = v),
+        Msg::SettingsResumeInterval(v) => edit_settings(m, |d| d.resume_interval = v),
+        Msg::SettingsResetDefaults => {
+            if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
+                let tab = draft.tab;
+                *draft = SettingsDraft::from_parts(
+                    &ClientSettings::default(),
+                    0,
+                    0,
+                    m.session_store.language.as_deref().unwrap_or("ru").to_string(),
+                    tab,
+                );
+            }
+        }
+        Msg::SaveSettings => {
+            apply_saved_settings(m);
         }
         Msg::OpenLimitsModal => {
             m.modal = Some(ActiveModal::SpeedLimits {
@@ -1128,6 +1294,289 @@ impl Drop for Model {
     }
 }
 
+fn edit_settings(m: &mut Model, f: impl FnOnce(&mut SettingsDraft)) {
+    if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
+        f(draft);
+        draft.error = None;
+    }
+}
+
+fn parse_u64_field(m: &Model, raw: &str, field_key: &str) -> Result<u64, String> {
+    raw.trim().parse::<u64>().map_err(|_| {
+        m.i18n
+            .tr_args("set-err-invalid", &[("field", Arg::Str(m.i18n.tr(field_key)))])
+    })
+}
+
+fn apply_saved_settings(m: &mut Model) {
+    let Some(ActiveModal::Settings(draft)) = m.modal.clone() else {
+        return;
+    };
+    let parsed = (|| -> Result<(ClientSettings, u64, u64), String> {
+        let port = draft.listen_port.trim().parse::<u16>().map_err(|_| {
+            m.i18n
+                .tr_args("set-err-invalid", &[("field", Arg::Str(m.i18n.tr("set-listen-port")))])
+        })?;
+        let mut dl = parse_u64_field(m, &draft.dl_limit, "set-dl-limit")?;
+        let mut ul = parse_u64_field(m, &draft.ul_limit, "set-ul-limit")?;
+        if dl > 0 {
+            dl = dl.max(MIN_LIMIT_KIB);
+        }
+        if ul > 0 {
+            ul = ul.max(MIN_LIMIT_KIB);
+        }
+        let max_peers = parse_u64_field(m, &draft.max_peers, "set-max-peers")? as usize;
+        let max_inbound = parse_u64_field(m, &draft.max_inbound, "set-max-inbound")? as usize;
+        let upload_slots = parse_u64_field(m, &draft.upload_slots, "set-upload-slots")? as usize;
+        let pipeline_depth = parse_u64_field(m, &draft.pipeline_depth, "set-pipeline-depth")? as usize;
+        let connect_timeout = parse_u64_field(m, &draft.connect_timeout, "set-connect-timeout")?;
+        let resume_interval = parse_u64_field(m, &draft.resume_interval, "set-resume-interval")?;
+        let settings = ClientSettings {
+            default_output_dir: draft.default_output_dir.clone(),
+            start_paused: draft.start_paused,
+            compact_ui: draft.compact_ui,
+            listen_port: port,
+            enable_dht: draft.enable_dht,
+            enable_port_mapping: draft.enable_port_mapping,
+            enable_pex: draft.enable_pex,
+            enable_quic: draft.enable_quic,
+            max_peers_per_torrent: max_peers,
+            max_inbound_peers: max_inbound,
+            upload_slots,
+            pipeline_depth,
+            connect_timeout_secs: connect_timeout,
+            resume_interval_secs: resume_interval,
+        }
+        .clamped();
+        Ok((settings, dl, ul))
+    })();
+
+    match parsed {
+        Ok((settings, dl, ul)) => {
+            if let Some(dir) = &settings.default_output_dir {
+                m.default_output_dir = dir.clone();
+            }
+            m.session_store.settings = settings.clone();
+            m.session_store.download_limit_kib = dl;
+            m.session_store.upload_limit_kib = ul;
+            m.session_store.language = Some(draft.language.clone());
+            m.i18n = build_i18n(&draft.language);
+            apply_runtime_settings(&settings);
+            apply_speed_limits(&m.session_store);
+            let _ = m.session_store.save_default();
+            m.modal = None;
+        }
+        Err(err_msg) => {
+            if let Some(ActiveModal::Settings(d)) = &mut m.modal {
+                d.error = Some(err_msg);
+            }
+        }
+    }
+}
+
+fn labeled_setting_row(
+    key: &'static str,
+    label: String,
+    value: String,
+    width: f32,
+    on_change: fn(String) -> Msg,
+) -> View<Msg> {
+    let val_empty = value.is_empty();
+    View::container(
+        Key::Name(format!("{key}_row")),
+        Style::row().gap(10.0).align_items(Align::Center),
+        vec![
+            View::container(
+                Key::Name(format!("{key}_lbl_wrap")),
+                Style::column().grow(1.0).shrink(1.0),
+                vec![View::leaf(
+                    Key::Name(format!("{key}_lbl")),
+                    label.clone(),
+                    move |ui, p| StyledLabel::add(ui, p, &label, 12.5, TEXT_MUTED),
+                )],
+            ),
+            View::leaf(Key::Name(format!("{key}_in")), (val_empty, width as u32), move |ui, p| {
+                TextInput::add(ui, p, &value, width, Callback::new(on_change))
+            }),
+        ],
+    )
+}
+
+fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
+    let title_lbl = m.i18n.tr("modal-settings-title");
+    let tabs = vec![
+        m.i18n.tr("set-tab-general"),
+        m.i18n.tr("set-tab-network"),
+        m.i18n.tr("set-tab-peers"),
+        m.i18n.tr("set-tab-engine"),
+    ];
+    let active_idx = match draft.tab {
+        SettingsTab::General => 0,
+        SettingsTab::Network => 1,
+        SettingsTab::Connections => 2,
+        SettingsTab::Performance => 3,
+    };
+
+    let tab_body: Vec<View<Msg>> = match draft.tab {
+        SettingsTab::General => {
+            let dir_hdr = m.i18n.tr("set-default-dir");
+            let dir_val = draft
+                .default_output_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| m.i18n.tr("set-default-dir-auto"));
+            let browse_lbl = m.i18n.tr("btn-folder");
+            let clear_lbl = m.i18n.tr("set-btn-clear");
+            let lang_lbl = m.i18n.tr("set-language");
+            let ru_var = if draft.language == "ru" { Variant::Primary } else { Variant::Secondary };
+            let en_var = if draft.language == "en" { Variant::Primary } else { Variant::Secondary };
+            let paused_lbl = m.i18n.tr("set-start-paused");
+            let paused_v = draft.start_paused;
+            let compact_lbl = m.i18n.tr("set-compact-ui");
+            let compact_v = draft.compact_ui;
+
+            vec![
+                View::leaf("set_dir_hdr", dir_hdr.clone(), move |ui, p| {
+                    StyledLabel::add(ui, p, &dir_hdr, 12.5, TEXT_MUTED)
+                }),
+                View::container(
+                    "set_dir_row",
+                    Style::row().gap(8.0).align_items(Align::Center),
+                    vec![
+                        View::container(
+                            "set_dir_txt_wrap",
+                            Style::column().grow(1.0).shrink(1.0),
+                            vec![View::leaf("set_dir_val", dir_val.clone(), move |ui, p| {
+                                StyledLabel::add(ui, p, &dir_val, 12.0, TEXT)
+                            })],
+                        ),
+                        View::leaf("set_dir_pick", browse_lbl.clone(), move |ui, p| {
+                            Button::add(ui, p, &browse_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsPickDir))
+                        }),
+                        View::leaf("set_dir_clr", clear_lbl.clone(), move |ui, p| {
+                            Button::add(ui, p, &clear_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsClearDir))
+                        }),
+                    ],
+                ),
+                View::container(
+                    "set_lang_row",
+                    Style::row().gap(10.0).align_items(Align::Center),
+                    vec![
+                        View::container(
+                            "set_lang_lbl_wrap",
+                            Style::column().grow(1.0).shrink(1.0),
+                            vec![View::leaf("set_lang_lbl", lang_lbl.clone(), move |ui, p| {
+                                StyledLabel::add(ui, p, &lang_lbl, 12.5, TEXT_MUTED)
+                            })],
+                        ),
+                        View::leaf("set_lang_ru", ru_var as u8, move |ui, p| {
+                            Button::add(ui, p, "Русский", ru_var, Callback::new(|_| Msg::SettingsLanguage("ru")))
+                        }),
+                        View::leaf("set_lang_en", en_var as u8, move |ui, p| {
+                            Button::add(ui, p, "English", en_var, Callback::new(|_| Msg::SettingsLanguage("en")))
+                        }),
+                    ],
+                ),
+                View::leaf("set_paused_cb", (paused_v, paused_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &paused_lbl, paused_v, Callback::new(Msg::SettingsStartPaused))
+                }),
+                View::leaf("set_compact_cb", (compact_v, compact_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &compact_lbl, compact_v, Callback::new(Msg::SettingsCompactUi))
+                }),
+            ]
+        }
+        SettingsTab::Network => {
+            let dht_lbl = m.i18n.tr("set-enable-dht");
+            let upnp_lbl = m.i18n.tr("set-enable-upnp");
+            let pex_lbl = m.i18n.tr("set-enable-pex");
+            let quic_lbl = m.i18n.tr("set-enable-quic");
+            let (dht_v, upnp_v, pex_v, quic_v) = (
+                draft.enable_dht,
+                draft.enable_port_mapping,
+                draft.enable_pex,
+                draft.enable_quic,
+            );
+            vec![
+                labeled_setting_row(
+                    "set_port",
+                    m.i18n.tr("set-listen-port"),
+                    draft.listen_port.clone(),
+                    110.0,
+                    Msg::SettingsListenPort,
+                ),
+                View::leaf("set_dht_cb", (dht_v, dht_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &dht_lbl, dht_v, Callback::new(Msg::SettingsDht))
+                }),
+                View::leaf("set_upnp_cb", (upnp_v, upnp_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &upnp_lbl, upnp_v, Callback::new(Msg::SettingsUpnp))
+                }),
+                View::leaf("set_pex_cb", (pex_v, pex_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &pex_lbl, pex_v, Callback::new(Msg::SettingsPex))
+                }),
+                View::leaf("set_quic_cb", (quic_v, quic_lbl.clone()), move |ui, p| {
+                    Checkbox::add(ui, p, &quic_lbl, quic_v, Callback::new(Msg::SettingsQuic))
+                }),
+            ]
+        }
+        SettingsTab::Connections => vec![
+            labeled_setting_row("set_dl", m.i18n.tr("set-dl-limit"), draft.dl_limit.clone(), 110.0, Msg::SettingsDlLimit),
+            labeled_setting_row("set_ul", m.i18n.tr("set-ul-limit"), draft.ul_limit.clone(), 110.0, Msg::SettingsUlLimit),
+            labeled_setting_row("set_mp", m.i18n.tr("set-max-peers"), draft.max_peers.clone(), 110.0, Msg::SettingsMaxPeers),
+            labeled_setting_row("set_mi", m.i18n.tr("set-max-inbound"), draft.max_inbound.clone(), 110.0, Msg::SettingsMaxInbound),
+            labeled_setting_row("set_us", m.i18n.tr("set-upload-slots"), draft.upload_slots.clone(), 110.0, Msg::SettingsUploadSlots),
+        ],
+        SettingsTab::Performance => vec![
+            labeled_setting_row("set_pipe", m.i18n.tr("set-pipeline-depth"), draft.pipeline_depth.clone(), 110.0, Msg::SettingsPipelineDepth),
+            labeled_setting_row("set_tout", m.i18n.tr("set-connect-timeout"), draft.connect_timeout.clone(), 110.0, Msg::SettingsConnectTimeout),
+            labeled_setting_row("set_res", m.i18n.tr("set-resume-interval"), draft.resume_interval.clone(), 110.0, Msg::SettingsResumeInterval),
+        ],
+    };
+
+    let note_lbl = m.i18n.tr("set-restart-note");
+    let reset_lbl = m.i18n.tr("set-btn-reset");
+    let cancel_lbl = m.i18n.tr("btn-cancel");
+    let save_lbl = m.i18n.tr("btn-save");
+
+    let mut out = vec![
+        View::leaf("set_title", title_lbl.clone(), move |ui, p| {
+            StyledLabel::add(ui, p, &title_lbl, 16.0, TEXT)
+        }),
+        View::leaf("set_tabs", (tabs.clone(), active_idx), move |ui, p| {
+            InspectorTabs::add(ui, p, tabs, active_idx, Callback::new(Msg::SelectSettingsTab))
+        }),
+        View::container(
+            "set_tab_body",
+            Style::column().gap(10.0).padding(Insets::symmetric(0.0, 4.0)),
+            tab_body,
+        ),
+        View::leaf("set_note", note_lbl.clone(), move |ui, p| {
+            StyledLabel::add(ui, p, &note_lbl, 11.5, TEXT_DIM)
+        }),
+    ];
+    if let Some(err) = draft.error.clone() {
+        out.push(View::leaf("set_err", err.clone(), move |ui, p| {
+            StyledLabel::add(ui, p, &err, 12.0, RED)
+        }));
+    }
+    out.push(View::container(
+        "set_btns",
+        Style::row().gap(8.0).align_items(Align::Center),
+        vec![
+            View::leaf("set_reset", reset_lbl.clone(), move |ui, p| {
+                Button::add(ui, p, &reset_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsResetDefaults))
+            }),
+            View::container("set_btn_sp", Style::spacer(), vec![]),
+            View::leaf("set_cancel", cancel_lbl.clone(), move |ui, p| {
+                Button::add(ui, p, &cancel_lbl, Variant::Secondary, Callback::new(|_| Msg::CloseModal))
+            }),
+            View::leaf("set_save", save_lbl.clone(), move |ui, p| {
+                Button::add(ui, p, &save_lbl, Variant::Primary, Callback::new(|_| Msg::SaveSettings))
+            }),
+        ],
+    ));
+    out
+}
+
 fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
     let dialog_children = match modal {
         ActiveModal::AddTorrent {
@@ -1135,6 +1584,7 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
             picked_file,
             output_dir,
             tag,
+            start_paused,
             error,
         } => {
             let file_txt = picked_file
@@ -1264,6 +1714,13 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                     Style::row().gap(6.0).align_items(Align::Center),
                     tag_row,
                 ),
+                {
+                    let paused_lbl = m.i18n.tr("add-start-paused");
+                    let paused_v = *start_paused;
+                    View::leaf("add_paused_cb", (paused_v, paused_lbl.clone()), move |ui, p| {
+                        Checkbox::add(ui, p, &paused_lbl, paused_v, Callback::new(Msg::SetAddStartPaused))
+                    })
+                },
             ];
             if let Some(err) = err_opt {
                 body.push(View::leaf("add_err", err.clone(), move |ui, p| {
@@ -1414,6 +1871,7 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                 ),
             ]
         }
+        ActiveModal::Settings(draft) => view_settings_modal(m, draft),
         ActiveModal::About => {
             let title_lbl = m.i18n.tr("modal-about-title");
             let ver_lbl = m
@@ -1473,8 +1931,13 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
         }
     };
 
+    let min_w = if matches!(modal, ActiveModal::Settings(_)) {
+        540.0
+    } else {
+        460.0
+    };
     let mut dialog_children = dialog_children;
-    dialog_children.insert(0, View::leaf("modal_min_w", (), |ui, p| ScaledBox::add(ui, p, 460.0, 0.0)));
+    dialog_children.insert(0, View::leaf("modal_min_w", min_w as u32, move |ui, p| ScaledBox::add(ui, p, min_w, 0.0)));
     let card = Surface::container(
         "modal_card",
         Style::column(),
@@ -1587,6 +2050,17 @@ fn view(m: &Model) -> Vec<View<Msg>> {
                     &lang_code,
                     Variant::Secondary,
                     Callback::new(|_| Msg::ToggleLanguage),
+                )
+            }),
+            View::leaf("btn_settings", (), |ui, p| {
+                ActionButton::add(
+                    ui,
+                    p,
+                    "settings",
+                    None,
+                    TEXT_MUTED,
+                    false,
+                    Callback::new(|_| Msg::OpenSettingsModal),
                 )
             }),
             View::leaf("btn_about", (), |ui, p| {
@@ -1838,23 +2312,35 @@ fn view(m: &Model) -> Vec<View<Msg>> {
 pub fn run_dashboard(
     initial_torrent_path: Option<PathBuf>,
     initial_magnet: Option<String>,
-    listen_port: u16,
-    output_dir: PathBuf,
+    listen_port: Option<u16>,
+    output_dir: Option<PathBuf>,
 ) -> Result<()> {
+    let session_store = SessionStore::load_default();
+    apply_runtime_settings(&session_store.settings);
+    apply_speed_limits(&session_store);
+
+    let effective_port = listen_port.unwrap_or(session_store.settings.listen_port);
+    let effective_output_dir = output_dir.unwrap_or_else(|| {
+        session_store
+            .settings
+            .default_output_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."))
+    });
+    let compact_ui = session_store.settings.compact_ui;
+
     let runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?,
     );
     let engine = runtime.block_on(Engine::start(EngineOptions {
-        listen_port,
-        enable_dht: true,
-        enable_port_mapping: true,
+        listen_port: effective_port,
+        enable_dht: session_store.settings.enable_dht,
+        enable_port_mapping: session_store.settings.enable_port_mapping,
     }))?;
 
     let (tx, rx) = mpsc::channel();
-    let session_store = SessionStore::load_default();
-    apply_speed_limits(&session_store);
     let i18n = build_i18n(session_store.language.as_deref().unwrap_or("ru"));
 
     let mut model = Model {
@@ -1864,7 +2350,7 @@ pub fn run_dashboard(
         selected_id: None,
         active_tab: InspectorTab::General,
         modal: None,
-        default_output_dir: output_dir.clone(),
+        default_output_dir: effective_output_dir.clone(),
         tx,
         rx,
         sessions: HashMap::new(),
@@ -1887,17 +2373,35 @@ pub fn run_dashboard(
         );
     }
 
+    let start_paused = model.session_store.settings.start_paused;
     if let Some(path) = initial_torrent_path {
-        model.start_core(TorrentSource::File(path), output_dir.clone(), None, None, false);
+        model.start_core(
+            TorrentSource::File(path),
+            effective_output_dir.clone(),
+            None,
+            None,
+            start_paused,
+        );
     }
     if let Some(uri) = initial_magnet {
-        model.start_core(TorrentSource::Magnet(uri), output_dir, None, None, false);
+        model.start_core(
+            TorrentSource::Magnet(uri),
+            effective_output_dir,
+            None,
+            None,
+            start_paused,
+        );
+    }
+
+    let mut theme = tortor_theme();
+    if compact_ui {
+        theme = theme.compact();
     }
 
     App::new(model)
         .update(update)
         .view(view)
-        .theme(tortor_theme())
+        .theme(theme)
         .window(WindowConfig {
             title: "TorTor Download Manager".to_string(),
             size: (1280.0, 780.0),
@@ -2036,6 +2540,88 @@ mod tests {
         let _ = update(&mut model_about, Msg::CloseModal);
         assert!(model_about.modal.is_none());
 
+        let _ = rt.block_on(engine.shutdown_graceful());
+    }
+
+    #[test]
+    fn settings_modal_saves_validates_and_resets() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().expect("tokio rt"));
+        let engine = rt
+            .block_on(Engine::start(EngineOptions {
+                listen_port: 0,
+                enable_dht: false,
+                enable_port_mapping: false,
+            }))
+            .expect("engine");
+        let (tx, rx) = mpsc::channel();
+        let mut model = Model {
+            sidebar_filter: SidebarFilter::All,
+            tag_filter: None,
+            filter_text: String::new(),
+            selected_id: None,
+            active_tab: InspectorTab::General,
+            modal: None,
+            default_output_dir: PathBuf::from("."),
+            tx,
+            rx,
+            sessions: HashMap::new(),
+            next_id: 1,
+            engine: engine.clone(),
+            runtime: rt.clone(),
+            session_store: SessionStore::default(),
+            i18n: build_i18n("ru"),
+            tick_gen: 0,
+        };
+
+        let mut ui: Ui<Msg> = Ui::new(
+            tortor_theme(),
+            Arc::new(Fonts::new()),
+            vec![],
+            MsgSink::new(),
+        );
+        let root = ui.root();
+
+        let _ = update(&mut model, Msg::OpenSettingsModal);
+        assert!(matches!(model.modal, Some(ActiveModal::Settings(_))));
+        for tab_idx in 0..4 {
+            let _ = update(&mut model, Msg::SelectSettingsTab(tab_idx));
+            ui.reconcile(root, view(&model));
+            let _ = ui.paint(Size::new(1280.0, 780.0));
+        }
+
+        // Invalid numeric input keeps modal open and records localized error
+        let _ = update(&mut model, Msg::SettingsListenPort("bad".into()));
+        let _ = update(&mut model, Msg::SaveSettings);
+        assert!(matches!(
+            model.modal,
+            Some(ActiveModal::Settings(SettingsDraft { error: Some(_), .. }))
+        ));
+
+        // Reset defaults clears error and restores valid defaults
+        let _ = update(&mut model, Msg::SettingsResetDefaults);
+        let _ = update(&mut model, Msg::SettingsMaxPeers("42".into()));
+        let _ = update(&mut model, Msg::SettingsUploadSlots("12".into()));
+        let _ = update(&mut model, Msg::SettingsPipelineDepth("24".into()));
+        let _ = update(&mut model, Msg::SettingsConnectTimeout("9".into()));
+        let _ = update(&mut model, Msg::SettingsResumeInterval("10".into()));
+        let _ = update(&mut model, Msg::SettingsPex(false));
+        let _ = update(&mut model, Msg::SettingsQuic(false));
+        let _ = update(&mut model, Msg::SettingsLanguage("en"));
+        let _ = update(&mut model, Msg::SaveSettings);
+
+        assert!(model.modal.is_none());
+        assert_eq!(model.session_store.settings.max_peers_per_torrent, 42);
+        assert_eq!(model.i18n.locale(), "en");
+        assert_eq!(crate::core::settings::max_active_peers(), 42);
+        assert_eq!(crate::core::settings::upload_slots(), 12);
+        assert_eq!(crate::core::settings::pipeline_depth(), 24);
+        assert_eq!(crate::core::settings::connect_timeout(), Duration::from_secs(9));
+        assert_eq!(crate::core::settings::resume_interval(), Duration::from_secs(10));
+        assert!(!crate::core::settings::pex_enabled());
+        assert!(!crate::core::settings::quic_enabled());
+
+        // Restore runtime tuning defaults
+        apply_runtime_settings(&ClientSettings::default());
         let _ = rt.block_on(engine.shutdown_graceful());
     }
 }

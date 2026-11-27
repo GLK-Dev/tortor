@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::fsutil;
+use crate::core::settings::ClientSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TorrentSource {
@@ -38,6 +39,9 @@ pub struct SessionStore {
     /// UI language tag (ru or en).
     #[serde(default)]
     pub language: Option<String>,
+    /// User-configurable client & network tuning.
+    #[serde(default)]
+    pub settings: ClientSettings,
 }
 
 impl SessionStore {
@@ -97,6 +101,7 @@ mod tests {
             download_limit_kib: 512,
             upload_limit_kib: 64,
             language: Some("ru".into()),
+            settings: ClientSettings::default(),
         };
         store.save(&path).unwrap();
         let loaded = SessionStore::load(&path).unwrap();

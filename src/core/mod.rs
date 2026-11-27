@@ -21,4 +21,5 @@ pub mod peer_id;
 pub mod resume;
 pub mod selection;
 pub mod session_store;
+pub mod settings;
 pub mod torrent;

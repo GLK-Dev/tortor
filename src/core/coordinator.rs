@@ -15,9 +15,6 @@ use crate::core::metadata_assembler::MetadataAssembler;
 use crate::core::resume::{save_fastresume, FastResumeState};
 use crate::core::selection::Selection;
 
-/// Progress is persisted at most this often while downloading.
-const RESUME_PERSIST_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-
 pub enum CoordinatorMsg {
     /// Asks for a piece the peer (described by `have`) can serve.
     RequestWork {
@@ -297,7 +294,7 @@ pub async fn run_coordinator(
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
                     send_piece_map(&ui_sender, manager).await;
 
-                    if manager.is_done() || last_persist.elapsed() >= RESUME_PERSIST_INTERVAL {
+                    if manager.is_done() || last_persist.elapsed() >= crate::core::settings::resume_interval() {
                         // Progress may only be recorded once the data is on disk.
                         if let Err(err) = disk_writer.flush().await {
                             error!("failed to flush piece data: {}", err);

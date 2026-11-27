@@ -106,6 +106,41 @@ about-license = License: MIT OR Apache-2.0
 about-repo = Repository: https://github.com/GLK-Dev/tortor
 btn-close = Close
 
+add-start-paused = Start torrent paused
+
+modal-settings-title = Settings
+set-tab-general = General
+set-tab-network = Network
+set-tab-peers = Peers & Limits
+set-tab-engine = Performance
+
+set-default-dir = Default download folder:
+set-default-dir-auto = (not set — uses launch folder)
+set-btn-clear = Reset
+set-language = Interface language:
+set-start-paused = Start newly added torrents paused
+set-compact-ui = Compact interface density (restart required)
+
+set-listen-port = Listening port TCP/QUIC (0 = random, restart):
+set-enable-dht = Enable Kademlia DHT (restart required)
+set-enable-upnp = Enable UPnP automatic port forwarding (restart required)
+set-enable-pex = Enable Peer Exchange / PEX (BEP 11)
+set-enable-quic = Enable outbound QUIC/TLS dialing alongside TCP
+
+set-dl-limit = Global download limit (KiB/s, 0 = unlimited):
+set-ul-limit = Global upload limit (KiB/s, 0 = unlimited):
+set-max-peers = Max active peers per torrent (1–250):
+set-max-inbound = Max global inbound peers (1–500, restart):
+set-upload-slots = Concurrent upload slots per torrent (1–64):
+
+set-pipeline-depth = Block request pipeline depth (2–128):
+set-connect-timeout = Peer connect timeout (seconds, 2–30):
+set-resume-interval = Resume state save interval (seconds, 1–60):
+
+set-restart-note = Port, DHT, UPnP, max inbound peers, and compact density take full effect after restart.
+set-err-invalid = Invalid numeric value in "{ $field }".
+set-btn-reset = Reset defaults
+
 unit-b = B
 unit-kb = KB
 unit-mb = MB
@@ -217,6 +252,41 @@ about-author = Автор: Виталий Голик (mjojo / GLK Dev)
 about-license = Лицензия: MIT OR Apache-2.0
 about-repo = Репозиторий: https://github.com/GLK-Dev/tortor
 btn-close = Закрыть
+
+add-start-paused = Добавить на паузе
+
+modal-settings-title = Настройки
+set-tab-general = Основные
+set-tab-network = Сеть
+set-tab-peers = Пиры и лимиты
+set-tab-engine = Движок и диск
+
+set-default-dir = Папка загрузок по умолчанию:
+set-default-dir-auto = (не задана — каталог запуска)
+set-btn-clear = Сбросить
+set-language = Язык интерфейса:
+set-start-paused = Добавлять новые торренты на паузе
+set-compact-ui = Компактная плотность интерфейса (после перезапуска)
+
+set-listen-port = Порт TCP/QUIC (0 = случайный, после перезапуска):
+set-enable-dht = Включить Kademlia DHT (после перезапуска)
+set-enable-upnp = Авто-проброс порта UPnP (после перезапуска)
+set-enable-pex = Включить обмен пирами PEX (BEP 11)
+set-enable-quic = Исходящие подключения QUIC/TLS параллельно с TCP
+
+set-dl-limit = Лимит скачивания (КиБ/с, 0 = без лимита):
+set-ul-limit = Лимит отдачи (КиБ/с, 0 = без лимита):
+set-max-peers = Макс. активных пиров на торрент (1–250):
+set-max-inbound = Макс. входящих пиров глобально (1–500, перезапуск):
+set-upload-slots = Слотов отдачи на торрент (1–64):
+
+set-pipeline-depth = Глубина конвейера запросов блоков (2–128):
+set-connect-timeout = Таймаут подключения к пиру (сек, 2–30):
+set-resume-interval = Интервал сохранения .resume (сек, 1–60):
+
+set-restart-note = Порт, DHT, UPnP, лимит входящих и компактный режим полностью применяются при перезапуске.
+set-err-invalid = Некорректное число в поле «{ $field }».
+set-btn-reset = По умолчанию
 
 unit-b = Б
 unit-kb = КБ

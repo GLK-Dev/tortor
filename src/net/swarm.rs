@@ -16,10 +16,9 @@ use crate::core::command::CoreMessage;
 use crate::core::coordinator::CoordinatorMsg;
 use crate::net::engine::{Engine, TorrentRegistration};
 use crate::net::probe;
-use crate::net::session::{PeerContext, TransferStats, UploadSlots, MAX_UPLOAD_SLOTS};
+use crate::net::session::{PeerContext, TransferStats, UploadSlots};
 use crate::net::tracker;
 
-const MAX_ACTIVE_PEERS: usize = 30;
 const SWARM_TICK_SECS: u64 = 5;
 /// Backstop only: sessions drop silent or useless peers on their own.
 const PEER_IDLE_TIMEOUT_SECS: u64 = 300;
@@ -88,7 +87,7 @@ pub async fn run_swarm_manager(
         ui_sender: ui_sender.clone(),
         coord_sender,
         swarm_event_tx: Some(event_tx.clone()),
-        upload_slots: UploadSlots::new(MAX_UPLOAD_SLOTS),
+        upload_slots: UploadSlots::from_settings(),
         stats: Arc::new(TransferStats::default()),
     };
     engine.register(
@@ -124,7 +123,7 @@ pub async fn run_swarm_manager(
     let _ = ui_sender
         .send(CoreMessage::Status(format!(
             "Swarm started: target {} active peers",
-            MAX_ACTIVE_PEERS
+            crate::core::settings::max_active_peers()
         )))
         .await;
 
@@ -160,6 +159,9 @@ pub async fn run_swarm_manager(
                                 .await;
                         }
                         SwarmEvent::PexPeersReceived(addrs) => {
+                            if !crate::core::settings::pex_enabled() {
+                                continue;
+                            }
                             let added = enqueue_peers(&mut available_peers, &active, addrs);
                             if added > 0 {
                                 info!("PEX discovered {} new peers", added);
@@ -200,6 +202,9 @@ pub async fn run_swarm_manager(
             }
 
             _ = pex_tick.tick() => {
+                if !crate::core::settings::pex_enabled() {
+                    continue;
+                }
                 let current_peers: Vec<SocketAddr> = active.keys().copied().collect();
                 if !current_peers.is_empty() {
                     let _ = announce_tx.send(crate::core::command::SessionEvent::ActivePeersSnapshot(current_peers));
@@ -241,7 +246,7 @@ pub async fn run_swarm_manager(
                     }
                 }
 
-                while active.len() < MAX_ACTIVE_PEERS {
+                while active.len() < crate::core::settings::max_active_peers() {
                     let Some(addr) = available_peers.pop_front() else {
                         break;
                     };

@@ -20,7 +20,8 @@ TorTor is a BitTorrent client written in Rust with a desktop GUI powered by [Hey
 - **Finding peers:** HTTP and UDP trackers (multiple trackers via `announce-list`, IPv6 peers), Kademlia DHT (BEP 5, incl. IPv6 per BEP 32; the node answers queries and announces itself), peer exchange (BEP 11).
 - **Uploading:** the client seeds while and after downloading and accepts inbound connections on one port for TCP and QUIC, IPv4 and IPv6. UPnP port forwarding is attempted automatically.
 - **Piece picking:** rarest-first with endgame mode; every piece is checked against its SHA-1 hash before it is written.
-- **Speed limits** for download and upload (configurable from the sidebar or status bar, saved between runs).
+- **Speed limits** for download and upload (configurable from Settings or the status bar, saved between runs).
+- **Fine-grained Settings dialog:** default download folder, start-paused option, compact UI density, listen port, DHT/UPnP/PEX/QUIC toggles, peer & inbound limits, upload slots, request pipeline depth, connect timeout, and resume save interval.
 - **Multilingual UI (RU / EN)** powered by `hey-i18n` with persisted language selection and system `TextScaleFactor` scaling.
 - **Visual inspector:** piece availability map, per-file progress and selection checkboxes, live peers, trackers, and logs.
 - **Crash-safe state:** resume data and the session list are written atomically; progress is recorded only after the data was flushed to disk. Existing files are re-checked when a torrent is added.
@@ -104,7 +105,8 @@ TorTor — BitTorrent-клиент на Rust с графическим инте�
 - **Поиск пиров:** HTTP- и UDP-трекеры (несколько трекеров через `announce-list`, IPv6-пиры), DHT Kademlia (BEP 5, IPv6 по BEP 32; узел отвечает на запросы и объявляет себя), обмен пирами (BEP 11).
 - **Раздача:** клиент раздаёт во время загрузки и после неё и принимает входящие соединения на одном порту для TCP и QUIC, IPv4 и IPv6. Проброс порта через UPnP включается автоматически.
 - **Выбор кусков:** сначала самые редкие, режим endgame; каждый кусок проверяется по SHA-1 до записи.
-- **Ограничение скорости** загрузки и раздачи (настраивается из боковой панели или строки состояния, сохраняется между запусками).
+- **Ограничение скорости** загрузки и раздачи (настраивается в окне настроек или строке состояния, сохраняется между запусками).
+- **Тонкая настройка (окно Настройки):** папка загрузок по умолчанию, добавление на паузе, компактный режим, порт TCP/QUIC, переключатели DHT/UPnP/PEX/QUIC, лимиты пиров и входящих подключений, слоты отдачи, глубина конвейера, таймаут подключения и интервал сохранения `.resume`.
 - **Двуязычный интерфейс (RU / EN)** на базе `hey-i18n` с сохранением выбранного языка и поддержкой системного масштаба текста `TextScaleFactor`.
 - **Инспектор торрента:** карта частей, выбор файлов с чекбоксами, список пиров, трекеры и журнал событий.
 - **Устойчивое состояние:** данные возобновления и список сессий пишутся атомарно; прогресс фиксируется только после сброса данных на диск. При добавлении торрента существующие файлы перепроверяются.

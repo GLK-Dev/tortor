@@ -27,7 +27,6 @@ type Stream<'a, 'b> = &'a mut crate::net::shaper::ShapedStream<&'b mut PeerStrea
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_secs(1);
 const REQUEST_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
-const PIPELINE_DEPTH: usize = 16;
 const WORK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(90);
 const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(150);
@@ -43,22 +42,32 @@ pub const MAX_UPLOAD_SLOTS: usize = 8;
 /// Shared counter that bounds how many peers we leave unchoked.
 #[derive(Debug)]
 pub struct UploadSlots {
-    max: usize,
+    fixed_max: Option<usize>,
     used: AtomicUsize,
 }
 
 impl UploadSlots {
     pub fn new(max: usize) -> Arc<Self> {
         Arc::new(Self {
-            max,
+            fixed_max: Some(max),
+            used: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn from_settings() -> Arc<Self> {
+        Arc::new(Self {
+            fixed_max: None,
             used: AtomicUsize::new(0),
         })
     }
 
     pub fn try_acquire(&self) -> bool {
+        let limit = self
+            .fixed_max
+            .unwrap_or_else(crate::core::settings::upload_slots);
         self.used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                (used < self.max).then_some(used + 1)
+                (used < limit).then_some(used + 1)
             })
             .is_ok()
     }
@@ -318,7 +327,7 @@ impl PeerSession<'_, '_> {
             return Ok(());
         };
 
-        while job.assembler.in_flight_count(REQUEST_RETRY_TIMEOUT) < PIPELINE_DEPTH {
+        while job.assembler.in_flight_count(REQUEST_RETRY_TIMEOUT) < crate::core::settings::pipeline_depth() {
             let Some((begin, len, is_retry)) = job.assembler.next_request(REQUEST_RETRY_TIMEOUT)
             else {
                 break;

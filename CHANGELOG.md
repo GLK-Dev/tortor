@@ -1,5 +1,15 @@
 # Changelog - TorTor
 
+## [1.8.1] - 2026-11-27
+
+### Settings & Engine Tuning / Настройки и тонкая настройка движка
+- **Settings dialog (`ActiveModal::Settings`):** added a 4-tab localized (EN/RU) settings window accessible from the toolbar gear icon (`SettingsDraft`):
+  - **General:** default download directory (folder picker + reset), interface language (`RU`/`EN`), start new torrents paused (also toggleable per-torrent in Add Torrent), and compact UI density (`Density::Compact`).
+  - **Network:** TCP/QUIC listening port (`listen_port`, `0` = random; `--listen-port` CLI overrides), Kademlia DHT toggle, UPnP port mapping toggle, live BEP 11 PEX toggle, and live outbound QUIC/TLS toggle.
+  - **Peers & Limits:** live global download/upload limits (KiB/s), max active peers per torrent (`1–250`), max global inbound peers (`1–500`), and concurrent upload slots per torrent (`1–64`, `UploadSlots::from_settings()`).
+  - **Performance:** live block request pipeline depth (`2–128`), peer connect/handshake timeout (`2–30s`), and fast-resume flush interval (`1–60s`).
+- **Persistence & Runtime Tuning (`src/core/settings.rs`):** added `ClientSettings` inside `SessionStore` (backward compatible with existing `session.json` files) backed by lock-free atomic `RuntimeTuning` parameters wired directly into `Engine`, `swarm`, `session`, `probe`, and `coordinator`.
+- Bumped package version to `1.8.1` and peer id prefix to `-TT1810-`.
 ## [1.8.0] - 2026-11-27
 
 ### UI & Localization / Интерфейс и локализация

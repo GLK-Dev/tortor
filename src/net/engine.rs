@@ -23,7 +23,6 @@ use crate::net::inbound;
 use crate::net::portmap::{self, PortMapStatus};
 use crate::net::session::PeerContext;
 
-const MAX_INBOUND_PEERS: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
@@ -186,7 +185,7 @@ impl Engine {
             shutdown_tx,
         });
 
-        let limit = Arc::new(Semaphore::new(MAX_INBOUND_PEERS));
+        let limit = Arc::new(Semaphore::new(crate::core::settings::max_inbound_peers()));
         spawn_tcp_acceptor(engine.clone(), tcp, limit.clone());
         spawn_quic_acceptor(engine.clone(), limit);
         Ok(engine)

@@ -1,4 +1,4 @@
-﻿// Copyright (c) Vitaly Golik (mjojo)
+// Copyright (c) Vitaly Golik (mjojo)
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #![cfg_attr(
@@ -43,8 +43,8 @@ use tortor::ui::dashboard;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Directory to download files to
-    #[arg(short, long, default_value = ".")]
-    output: PathBuf,
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 
     /// Path to .torrent file
     #[arg(short, long)]
@@ -84,11 +84,10 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "gui")]
     if run_gui {
-        let port = args.listen_port.unwrap_or(6881);
         return dashboard::run_dashboard(
             args.torrent.clone(),
             args.magnet.clone(),
-            port,
+            args.listen_port,
             args.output,
         );
     }
@@ -166,7 +165,7 @@ async fn run_cli(args: Args) -> Result<()> {
     }
 
     // --- FULL LIVE BITTORENT SWARM DOWNLOAD SESSION ---
-    let output_dir = args.output;
+    let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&output_dir)?;
 
     info!("============================================================");

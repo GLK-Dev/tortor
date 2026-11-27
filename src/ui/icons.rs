@@ -65,6 +65,12 @@ const INFO_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" 
   <path d="M12 11.2V16.8" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="square"/>
 </svg>"##;
 
+const GEAR_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="3.4" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+  <path d="M12 2.5V5.2M12 18.8V21.5M2.5 12H5.2M18.8 12H21.5M5.3 5.3L7.2 7.2M16.8 16.8L18.7 18.7M18.7 5.3L16.8 7.2M7.2 16.8L5.3 18.7" stroke="#FFFFFF" stroke-width="2" stroke-linecap="square"/>
+  <circle cx="12" cy="12" r="6.8" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
+</svg>"##;
+
 pub fn ensure_icons(env: &Env) {
     let mut host = env.icons.borrow_mut();
     if host.cache.contains("tortor_logo") {
@@ -77,4 +83,5 @@ pub fn ensure_icons(env: &Env) {
     host.cache.add_source("trash", TRASH_SVG);
     host.cache.add_source("search", SEARCH_SVG);
     host.cache.add_source("info", INFO_SVG);
+    host.cache.add_source("settings", GEAR_SVG);
 }
