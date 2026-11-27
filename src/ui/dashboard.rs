@@ -31,9 +31,9 @@ use super::theme::{
     TEXT_DIM, TEXT_MUTED, WINDOW_BG,
 };
 use super::widgets::{
-    ActionButton, DesktopBackdrop, FilterInput, InspectorTabs, ModalBackdrop, PieceMapBar,
-    SectionLabel, SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader,
-    TorrentRow, TorrentRowProps, WindowTab,
+    ActionButton, FilterInput, InspectorTabs, ModalBackdrop, PieceMapBar, SectionLabel,
+    SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader, TorrentRow,
+    TorrentRowProps,
 };
 
 const TAGS: [&str; 3] = ["system", "video", "data"];
@@ -1717,7 +1717,7 @@ fn view(m: &Model) -> Vec<View<Msg>> {
     ];
     let main_right = View::container(
         "main_right",
-        Style::column().grow(1.0),
+        Style::column().grow(1.0).shrink(1.0),
         vec![
             toolbar,
             View::leaf("tbl_hdr", cols.clone(), move |ui, p| {
@@ -1725,7 +1725,7 @@ fn view(m: &Model) -> Vec<View<Msg>> {
             }),
             View::container(
                 "tbl_scroll",
-                Style::column().grow(1.0).scroll(false, true),
+                Style::column().grow(1.0).shrink(1.0).scroll(false, true),
                 rows_list,
             ),
             inspector,
@@ -1733,42 +1733,31 @@ fn view(m: &Model) -> Vec<View<Msg>> {
         ],
     );
 
-    let window_card = Surface::container(
-        "window_card",
-        Style::column().grow(1.0),
-        Style::row().grow(1.0),
+    let app_shell = Surface::container(
+        "app_shell",
+        Style::column().grow(1.0).shrink(1.0),
+        Style::row().grow(1.0).shrink(1.0),
         Surface {
             fill: WINDOW_BG,
-            border_top: Some(LINE),
-            border_right: Some(LINE),
-            border_bottom: Some(LINE),
-            border_left: Some(LINE),
+            border_top: None,
+            border_right: None,
+            border_bottom: None,
+            border_left: None,
             chamfer: 0.0,
         },
         vec![view_sidebar(m), main_right],
     );
 
-    let shell_frame = DesktopBackdrop::container(
-        "desktop_bg",
-        Style::column().grow(1.0),
-        Style::column().padding(Insets {
-            left: 20.0,
-            top: 14.0,
-            right: 20.0,
-            bottom: 16.0,
-        }),
-        vec![
-            View::leaf("win_tab", (), |ui, p| WindowTab::add(ui, p, "Tortor")),
-            window_card,
-        ],
-    );
-
-    let mut stack_children = vec![shell_frame];
+    let mut stack_children = vec![app_shell];
     if let Some(modal) = &m.modal {
         stack_children.push(view_modal(m, modal));
     }
 
-    vec![View::container("root", Style::stack(), stack_children)]
+    vec![View::container(
+        "root",
+        Style::stack().grow(1.0).shrink(1.0),
+        stack_children,
+    )]
 }
 
 pub fn run_dashboard(
@@ -1852,4 +1841,84 @@ pub fn run_dashboard(
         rt.shutdown_timeout(Duration::from_secs(1));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hey_core::{MsgSink, Size};
+    use hey_text::Fonts;
+    use hey_widgets::Ui;
+
+    #[test]
+    fn root_fills_and_resizes_with_viewport() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().expect("tokio rt"));
+        let engine = rt
+            .block_on(Engine::start(EngineOptions {
+                listen_port: 0,
+                enable_dht: false,
+                enable_port_mapping: false,
+            }))
+            .expect("engine");
+        let (tx, rx) = mpsc::channel();
+        let model = Model {
+            sidebar_filter: SidebarFilter::All,
+            tag_filter: None,
+            filter_text: String::new(),
+            selected_id: None,
+            active_tab: InspectorTab::General,
+            modal: None,
+            default_output_dir: PathBuf::from("."),
+            tx,
+            rx,
+            sessions: HashMap::new(),
+            next_id: 1,
+            engine: engine.clone(),
+            runtime: rt.clone(),
+            session_store: SessionStore::default(),
+            i18n: build_i18n("ru"),
+            tick_gen: 0,
+        };
+
+        let mut ui: Ui<Msg> = Ui::new(
+            tortor_theme(),
+            Arc::new(Fonts::new()),
+            vec![],
+            MsgSink::new(),
+        );
+        let root = ui.root();
+        let views = view(&model);
+        ui.reconcile(root, views);
+
+        // Initial viewport 1180x740
+        let dl1 = ui.paint(Size::new(1180.0, 740.0));
+        let full_bg_1 = dl1.cmds().iter().any(|cmd| match cmd {
+            hey_draw::DrawCmd::Rect { rect, fill, .. } => {
+                *fill == WINDOW_BG && (rect.w - 1180.0).abs() < 1.0 && (rect.h - 740.0).abs() < 1.0
+            }
+            _ => false,
+        });
+        assert!(full_bg_1, "background should cover full 1180x740 window without outer margins");
+
+        // Resized larger viewport 1680x1020
+        let dl2 = ui.paint(Size::new(1680.0, 1020.0));
+        let full_bg_2 = dl2.cmds().iter().any(|cmd| match cmd {
+            hey_draw::DrawCmd::Rect { rect, fill, .. } => {
+                *fill == WINDOW_BG && (rect.w - 1680.0).abs() < 1.0 && (rect.h - 1020.0).abs() < 1.0
+            }
+            _ => false,
+        });
+        assert!(full_bg_2, "app_shell must stretch cleanly to 1680x1020 on window resize");
+
+        // Also ensure sidebar height & bottom status bar track the new height (no 450px cap)
+        let status_at_bottom = dl2.cmds().iter().any(|cmd| match cmd {
+            hey_draw::DrawCmd::Rect { rect, fill, .. } => {
+                *fill == STATUSBAR_BG && (rect.bottom() - 1020.0).abs() < 1.5
+            }
+            _ => false,
+        });
+        assert!(status_at_bottom, "status bar must stay anchored to bottom at y=1020");
+
+        let _ = rt.block_on(engine.shutdown_graceful());
+    }
 }

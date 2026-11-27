@@ -6,7 +6,6 @@
 use hey_core::Color;
 use hey_style::Theme;
 
-pub const DESKTOP_BG: Color = Color::hex(0x0B0C10);
 pub const WINDOW_BG: Color = Color::hex(0x14161B);
 pub const SIDEBAR_BG: Color = Color::hex(0x101216);
 pub const INSPECTOR_BG: Color = Color::hex(0x181A20);
@@ -21,7 +20,6 @@ pub const ROW_DIVIDER: Color = Color::hex(0x1E222A);
 
 pub const ACCENT: Color = Color::hex(0xF5A623);
 pub const ACCENT_DARK: Color = Color::hex(0xB26A00);
-pub const ON_ACCENT: Color = Color::hex(0x14161B);
 pub const CYAN: Color = Color::hex(0x00E5FF);
 pub const GREEN: Color = Color::hex(0x00FF66);
 pub const RED: Color = Color::hex(0xFF3366);

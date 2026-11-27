@@ -14,8 +14,7 @@ use hey_widgets::{Env, SharedClipboard, Ui, View, Widget};
 
 use super::icons::ensure_icons;
 use super::theme::{
-    ACCENT, BAR_TRACK, CONTROL_BG, CONTROL_HOVER, CYAN, DESKTOP_BG, GREEN, INPUT_BG, LINE,
-    ON_ACCENT, RED, ROW_DIVIDER, ROW_HOVER, ROW_SELECTED, TEXT, TEXT_DIM, TEXT_MUTED,
+    ACCENT, BAR_TRACK, CONTROL_BG, CONTROL_HOVER, CYAN, GREEN, INPUT_BG, LINE,  RED, ROW_DIVIDER, ROW_HOVER, ROW_SELECTED, TEXT, TEXT_DIM, TEXT_MUTED,
 };
 
 fn text_style(env: &Env, size_px: f32, max_width: Option<f32>, align: TextAlign) -> TextStyle {
@@ -41,62 +40,6 @@ fn draw_text(
     let l = layout(&env.fonts, text, &st);
     for run in l.to_runs(pos, color) {
         out.push(DrawCmd::Text(run));
-    }
-}
-
-/// Outer desktop frame with subtle diagonal accent lines matching the mockup.
-pub struct DesktopBackdrop;
-
-impl DesktopBackdrop {
-    pub fn container<Msg: 'static>(
-        key: impl Into<hey_core::Key>,
-        outer_style: Style,
-        inner_style: Style,
-        children: Vec<View<Msg>>,
-    ) -> View<Msg> {
-        let mut stack_style = Style::stack();
-        stack_style.width = outer_style.width;
-        stack_style.height = outer_style.height;
-        stack_style.grow = outer_style.grow;
-        View::container(
-            key,
-            stack_style,
-            vec![
-                View::leaf("__bg", (), |ui, p| {
-                    ui.add_widget(p, Style::leaf().pass_through(), DesktopBackdrop, |_| {
-                        Size::new(0.0, 0.0)
-                    })
-                }),
-                View::container("__inner", inner_style, children),
-            ],
-        )
-    }
-}
-
-impl<Msg> Widget<Msg> for DesktopBackdrop {
-    fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
-        ensure_icons(env);
-        out.push(DrawCmd::fill(rect, DESKTOP_BG));
-        let stripe = Color::rgba(0xF5, 0xA6, 0x23, 28);
-        let faint = Color::rgba(0x2C, 0x30, 0x3A, 70);
-        out.push(DrawCmd::Line {
-            a: Point::new(rect.right() - 260.0, rect.y),
-            b: Point::new(rect.right() - 60.0, rect.y + 200.0),
-            width: 14.0,
-            color: stripe,
-        });
-        out.push(DrawCmd::Line {
-            a: Point::new(rect.right() - 180.0, rect.y),
-            b: Point::new(rect.right(), rect.y + 180.0),
-            width: 28.0,
-            color: faint,
-        });
-        out.push(DrawCmd::Line {
-            a: Point::new(rect.x, rect.bottom() - 220.0),
-            b: Point::new(rect.x + 220.0, rect.bottom()),
-            width: 14.0,
-            color: stripe,
-        });
     }
 }
 
@@ -221,48 +164,6 @@ impl<Msg: 'static> Widget<Msg> for ModalBackdrop<Msg> {
     }
     fn click(&mut self, _env: &Env, _rect: Rect, _pos: Point, sink: &MsgSink<Msg>) {
         self.on_dismiss.emit(sink, ());
-    }
-}
-
-/// BeOS/HeOS-style yellow angled window tab (`Tortor`) above the main panel.
-pub struct WindowTab {
-    pub title: String,
-}
-
-impl WindowTab {
-    pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, title: &str) -> NodeId {
-        let mut st = Style::leaf();
-        st.width = Dim::Px(94.0);
-        st.height = Dim::Px(26.0);
-        ui.add_widget(
-            parent,
-            st,
-            WindowTab {
-                title: title.to_string(),
-            },
-            |_| Size::new(94.0, 26.0),
-        )
-    }
-}
-
-impl<Msg> Widget<Msg> for WindowTab {
-    fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
-        out.push(DrawCmd::Rect {
-            rect,
-            fill: ACCENT,
-            border: None,
-            chamfer: 6.0,
-            shadow: None,
-        });
-        let st = text_style(env, 13.0, None, TextAlign::Center);
-        let l = layout(&env.fonts, &self.title, &st);
-        let origin = Point::new(
-            rect.x + (rect.w - l.width) / 2.0,
-            rect.y + (rect.h - l.height) / 2.0,
-        );
-        for run in l.to_runs(origin, ON_ACCENT) {
-            out.push(DrawCmd::Text(run));
-        }
     }
 }
 
