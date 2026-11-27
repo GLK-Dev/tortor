@@ -14,7 +14,8 @@ use hey_widgets::{Env, SharedClipboard, Ui, View, Widget};
 
 use super::icons::ensure_icons;
 use super::theme::{
-    ACCENT, BAR_TRACK, CONTROL_BG, CONTROL_HOVER, CYAN, GREEN, INPUT_BG, LINE,  RED, ROW_DIVIDER, ROW_HOVER, ROW_SELECTED, TEXT, TEXT_DIM, TEXT_MUTED,
+    ACCENT, BAR_TRACK, CONTROL_BG, CONTROL_HOVER, CYAN, GREEN, INPUT_BG, LINE, RED, ROW_DIVIDER,
+    ROW_HOVER, ROW_SELECTED, TEXT, TEXT_DIM, TEXT_MUTED,
 };
 
 fn text_style(env: &Env, size_px: f32, max_width: Option<f32>, align: TextAlign) -> TextStyle {
@@ -49,8 +50,16 @@ pub struct ScaledBox;
 
 impl ScaledBox {
     pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, base_w: f32, base_h: f32) -> NodeId {
-        let w = if base_w > 0.0 { ui.env.theme.space(base_w) } else { 0.0 };
-        let h = if base_h > 0.0 { ui.env.theme.space(base_h) } else { 0.0 };
+        let w = if base_w > 0.0 {
+            ui.env.theme.space(base_w)
+        } else {
+            0.0
+        };
+        let h = if base_h > 0.0 {
+            ui.env.theme.space(base_h)
+        } else {
+            0.0
+        };
         let mut st = Style::leaf().pass_through();
         st.width = Dim::Px(w);
         st.height = Dim::Px(h);
@@ -274,7 +283,12 @@ impl SectionLabel {
 impl<Msg> Widget<Msg> for SectionLabel {
     fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
         let pad_x = env.theme.space(self.pad_x);
-        let st = text_style(env, 10.5, Some((rect.w - pad_x * 2.0).max(20.0)), TextAlign::Left);
+        let st = text_style(
+            env,
+            10.5,
+            Some((rect.w - pad_x * 2.0).max(20.0)),
+            TextAlign::Left,
+        );
         let l = layout(&env.fonts, &self.text, &st);
         let ty = rect.y + (rect.h - l.height) / 2.0;
         for run in l.to_runs(Point::new(rect.x + pad_x, ty), TEXT_DIM) {
@@ -339,7 +353,12 @@ impl<Msg: 'static> Widget<Msg> for SidebarItem<Msg> {
         let pad_x = env.theme.space(16.0);
         let right_reserve = env.theme.space(58.0);
         let fg = if self.active { TEXT } else { TEXT_MUTED };
-        let st = text_style(env, 13.0, Some((rect.w - right_reserve).max(20.0)), TextAlign::Left);
+        let st = text_style(
+            env,
+            13.0,
+            Some((rect.w - right_reserve).max(20.0)),
+            TextAlign::Left,
+        );
         let l = layout(&env.fonts, &self.label, &st);
         let ty = rect.y + (rect.h - l.height) / 2.0;
         for run in l.to_runs(Point::new(rect.x + pad_x, ty), fg) {
@@ -382,7 +401,11 @@ impl<Msg: 'static> ActionButton<Msg> {
         let env = ui.env.clone();
         let h = env.theme.space(32.0);
         let w = if let Some(text) = label {
-            let l = layout(&env.fonts, text, &text_style(&env, 13.0, None, TextAlign::Left));
+            let l = layout(
+                &env.fonts,
+                text,
+                &text_style(&env, 13.0, None, TextAlign::Left),
+            );
             env.theme.space(34.0) + l.width.ceil() + env.theme.space(14.0)
         } else {
             h
@@ -428,7 +451,11 @@ impl<Msg: 'static> Widget<Msg> for ActionButton<Msg> {
         let border = if self.filled || state.hovered() {
             Some(Border {
                 width: 1.0,
-                color: if state.hovered() { LINE } else { Color::hex(0x252932) },
+                color: if state.hovered() {
+                    LINE
+                } else {
+                    Color::hex(0x252932)
+                },
             })
         } else {
             None
@@ -460,7 +487,11 @@ impl<Msg: 'static> Widget<Msg> for ActionButton<Msg> {
             });
         }
         if let Some(text) = &self.label {
-            let l = layout(&env.fonts, text, &text_style(env, 13.0, None, TextAlign::Left));
+            let l = layout(
+                &env.fonts,
+                text,
+                &text_style(env, 13.0, None, TextAlign::Left),
+            );
             let ty = rect.y + (rect.h - l.height) / 2.0;
             let fg = if state.disabled() { TEXT_DIM } else { TEXT };
             for run in l.to_runs(Point::new(rect.x + env.theme.space(32.0), ty), fg) {
@@ -570,7 +601,11 @@ impl<Msg: 'static> Widget<Msg> for FilterInput<Msg> {
         });
 
         let icon_sz = env.theme.space(14.0).max(12.0) as u32;
-        if let Some(img) = env.icons.borrow_mut().get("search", icon_sz, Some(TEXT_MUTED)) {
+        if let Some(img) = env
+            .icons
+            .borrow_mut()
+            .get("search", icon_sz, Some(TEXT_MUTED))
+        {
             out.push(DrawCmd::Image {
                 rect: Rect::new(
                     rect.x + env.theme.space(10.0),
@@ -650,7 +685,11 @@ impl<Msg: 'static> Widget<Msg> for FilterInput<Msg> {
         let rel = pos.x - (rect.x + env.theme.space(32.0)) + self.scroll.get();
         let t = self.edit.text();
         let mut best = (0usize, f32::MAX);
-        for i in t.char_indices().map(|(i, _)| i).chain(std::iter::once(t.len())) {
+        for i in t
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(t.len()))
+        {
             let d = (self.x_of(env, i) - rel).abs();
             if d < best.1 {
                 best = (i, d);
@@ -690,7 +729,9 @@ impl<Msg: 'static> Widget<Msg> for FilterInput<Msg> {
                     e.undo();
                 }
             }
-            ("y", true) => { e.redo(); }
+            ("y", true) => {
+                e.redo();
+            }
             _ => return false,
         }
         self.changed(&before, sink);
@@ -827,12 +868,9 @@ impl<Msg: 'static> TorrentRow<Msg> {
         let w = ui.env.theme.space(500.0);
         let mut st = Style::leaf();
         st.height = Dim::Px(h);
-        ui.add_widget(
-            parent,
-            st,
-            TorrentRow { props, on_select },
-            move |_| Size::new(w, h),
-        )
+        ui.add_widget(parent, st, TorrentRow { props, on_select }, move |_| {
+            Size::new(w, h)
+        })
     }
 }
 
@@ -907,7 +945,10 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
         let bar_w = (c.prog_w - pct_w - pct_gap).max(env.theme.space(40.0));
         let bar_h = env.theme.space(4.0).max(4.0);
         let bar_y = rect.y + (rect.h - bar_h) / 2.0;
-        out.push(DrawCmd::fill(Rect::new(c.prog_x, bar_y, bar_w, bar_h), BAR_TRACK));
+        out.push(DrawCmd::fill(
+            Rect::new(c.prog_x, bar_y, bar_w, bar_h),
+            BAR_TRACK,
+        ));
         let frac = (self.props.progress_milli as f32 / 1000.0).clamp(0.0, 1.0);
         if frac > 0.0 {
             let fill_col = if self.props.status_kind == 3 {
@@ -928,8 +969,16 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
             out,
         );
 
-        let down_col = if self.props.down_text == "—" { TEXT_DIM } else { TEXT };
-        let up_col = if self.props.up_text == "—" { TEXT_DIM } else { TEXT };
+        let down_col = if self.props.down_text == "—" {
+            TEXT_DIM
+        } else {
+            TEXT
+        };
+        let up_col = if self.props.up_text == "—" {
+            TEXT_DIM
+        } else {
+            TEXT
+        };
         right_text(&self.props.down_text, c.down_x, c.down_w, down_col, out);
         right_text(&self.props.up_text, c.up_x, c.up_w, up_col, out);
         right_text(&self.props.eta_text, c.eta_x, c.eta_w, TEXT_MUTED, out);
@@ -975,7 +1024,11 @@ impl<Msg: 'static> InspectorTabs<Msg> {
         let mut x = rect.x + pad;
         let mut spans = Vec::with_capacity(self.labels.len());
         for label in &self.labels {
-            let l = layout(&env.fonts, label, &text_style(env, 12.5, None, TextAlign::Left));
+            let l = layout(
+                &env.fonts,
+                label,
+                &text_style(env, 12.5, None, TextAlign::Left),
+            );
             let w = l.width.ceil() + pad;
             spans.push((x, x + w));
             x += w + gap;

@@ -811,9 +811,10 @@ fn background_task(
                 let Some(files) = meta.files.as_ref() else {
                     continue;
                 };
-                let requested = selection.lock().unwrap().clone().filter(|flags| {
-                    flags.len() == files.len() && flags.iter().any(|keep| *keep)
-                });
+                let requested =
+                    selection.lock().unwrap().clone().filter(|flags| {
+                        flags.len() == files.len() && flags.iter().any(|keep| *keep)
+                    });
                 let Some(after) = requested else { continue };
                 if after == current_flags {
                     continue;

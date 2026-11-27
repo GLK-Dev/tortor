@@ -1,5 +1,15 @@
 # Changelog - TorTor
 
+## [1.8.2] - 2026-11-27
+
+### Linux & macOS Ready GUI + Release Automation / Готовый GUI для Linux и macOS + авторелизы
+- **Standalone upstream `Hey` dependency:** switched `hey-*` crates in `Cargo.toml` to fetch directly from `https://github.com/GLK-Dev/Hey.git` (`rev = 85848125`), allowing clean builds from a fresh clone on Linux, macOS, and Windows without a sibling `../Hey` checkout.
+- **Cross-platform GUI polish:** added `default_downloads_dir()` (`dirs::download_dir()` fallback) so launching `.app` / `.desktop` bundles outside a terminal does not default to read-only `/`; added positional `.torrent` file opening for desktop/file-manager launches.
+- **Desktop packaging:** added `packaging/linux/tortor.desktop` + `packaging/linux/install.sh` (`~/.local` binary, icon, and desktop entry) and `packaging/macos/Info.plist` + `packaging/macos/build_app.sh` (Universal `TorTor.app` bundle with `.icns`, HiDPI Retina support, `.torrent`/`magnet:` handlers, and ad-hoc signing).
+- **Multi-OS CI & GitHub Releases:** added `macos-latest` and Linux GUI system dependencies to `.github/workflows/ci.yml`, added `.github/workflows/release.yml` to build and publish `linux_x86_64.tar.gz`, `macos_universal.zip` (`TorTor.app`), and `windows_x86_64.zip` on `v*` tags.
+- **Toolchain compatibility:** fixed Rust 1.99+ clippy lints (`AtomicUsize::fetch_update`, `chunks_exact`, `let_unit_value`) and unused imports in `src/main.rs`.
+- Bumped package version to `1.8.2` and peer id prefix to `-TT1820-`.
+
 ## [1.8.1] - 2026-11-27
 
 ### Settings & Engine Tuning / Настройки и тонкая настройка движка

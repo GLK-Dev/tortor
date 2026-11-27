@@ -61,7 +61,9 @@ impl PexMessage {
 
 pub fn decode_compact_ipv4(bytes: &[u8]) -> Vec<SocketAddr> {
     bytes
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .map(|chunk| {
             SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]),
@@ -83,7 +85,9 @@ pub fn decode_compact_peers(bytes: &[u8]) -> Vec<SocketAddr> {
 
 pub fn decode_compact_ipv6(bytes: &[u8]) -> Vec<SocketAddr> {
     bytes
-        .chunks_exact(18)
+        .as_chunks::<18>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&chunk[..16]);

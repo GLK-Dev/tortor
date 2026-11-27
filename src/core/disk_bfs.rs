@@ -1,4 +1,4 @@
-﻿// Copyright (c) Vitaly Golik (mjojo)
+// Copyright (c) Vitaly Golik (mjojo)
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! BFS Direct-IO disk backend; compiled on Haiku / HeOS only (see `core/mod.rs`).
@@ -11,7 +11,9 @@ use tracing::{debug, info, warn};
 
 use crate::core::disk::{is_selected, plan_files};
 use crate::core::disk_io::AsyncDiskIO;
-use crate::core::heos_fs_ffi::{HeosFile, HEOS_FS_CREATE, HEOS_FS_DIRECT_IO, HEOS_FS_READ, HEOS_FS_WRITE};
+use crate::core::heos_fs_ffi::{
+    HeosFile, HEOS_FS_CREATE, HEOS_FS_DIRECT_IO, HEOS_FS_READ, HEOS_FS_WRITE,
+};
 use crate::core::torrent::TorrentFile;
 
 pub struct BfsFileMapping {
@@ -129,8 +131,12 @@ fn locate(files: &mut [BfsFileMapping], offset: u64) -> Option<&mut BfsFileMappi
 /// Reopens the file without O_DIRECT. The new handle is opened before the old one is
 /// replaced, so a failure leaves the mapping usable.
 fn reopen_buffered(mapping: &mut BfsFileMapping) -> Result<()> {
-    let file = HeosFile::open(&mapping.path, HEOS_FS_READ | HEOS_FS_WRITE)
-        .with_context(|| format!("failed to reopen {} without O_DIRECT", mapping.path.display()))?;
+    let file = HeosFile::open(&mapping.path, HEOS_FS_READ | HEOS_FS_WRITE).with_context(|| {
+        format!(
+            "failed to reopen {} without O_DIRECT",
+            mapping.path.display()
+        )
+    })?;
     mapping.file = Some(file);
     mapping.direct = false;
     Ok(())
@@ -236,7 +242,8 @@ impl AsyncDiskIO for BfsDirectDisk {
                     let mut file_done = 0;
                     while file_done < to_write {
                         let slice = &data[written + file_done..written + to_write];
-                        let n = write_with_fallback(mapping, slice, file_offset + file_done as u64)?;
+                        let n =
+                            write_with_fallback(mapping, slice, file_offset + file_done as u64)?;
                         ensure!(n > 0, "write returned zero bytes");
                         file_done += n;
                     }

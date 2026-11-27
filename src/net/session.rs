@@ -65,19 +65,33 @@ impl UploadSlots {
         let limit = self
             .fixed_max
             .unwrap_or_else(crate::core::settings::upload_slots);
-        self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                (used < limit).then_some(used + 1)
-            })
-            .is_ok()
+        let mut used = self.used.load(Ordering::Acquire);
+        while used < limit {
+            match self.used.compare_exchange_weak(
+                used,
+                used + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(cur) => used = cur,
+            }
+        }
+        false
     }
 
     pub fn release(&self) {
-        let _ = self
-            .used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                Some(used.saturating_sub(1))
-            });
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            let next = used.saturating_sub(1);
+            match self
+                .used
+                .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(cur) => used = cur,
+            }
+        }
     }
 }
 
@@ -327,7 +341,9 @@ impl PeerSession<'_, '_> {
             return Ok(());
         };
 
-        while job.assembler.in_flight_count(REQUEST_RETRY_TIMEOUT) < crate::core::settings::pipeline_depth() {
+        while job.assembler.in_flight_count(REQUEST_RETRY_TIMEOUT)
+            < crate::core::settings::pipeline_depth()
+        {
             let Some((begin, len, is_retry)) = job.assembler.next_request(REQUEST_RETRY_TIMEOUT)
             else {
                 break;

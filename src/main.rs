@@ -10,12 +10,12 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, warn, Level};
 
 use tortor::core::bencode;
 use tortor::core::command::{CoreMessage, SessionEvent};
@@ -28,10 +28,10 @@ use tortor::net::listener;
 use tortor::net::swarm;
 use tortor::net::tracker;
 
-#[cfg(target_os = "haiku")]
-use tortor::core::disk_bfs::BfsDirectDisk;
 #[cfg(not(any(target_os = "linux", target_os = "haiku")))]
 use tortor::core::disk::StandardDisk;
+#[cfg(target_os = "haiku")]
+use tortor::core::disk_bfs::BfsDirectDisk;
 #[cfg(target_os = "linux")]
 use tortor::core::disk_uring::UringDisk;
 
@@ -84,12 +84,21 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "gui")]
     if run_gui {
-        return dashboard::run_dashboard(
-            args.torrent.clone(),
-            args.magnet.clone(),
-            args.listen_port,
-            args.output,
-        );
+        let mut torrent = args.torrent.clone();
+        let mut magnet = args.magnet.clone();
+        if torrent.is_none() {
+            if let Some(arg) = magnet.as_deref() {
+                let p = std::path::Path::new(arg);
+                if p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("torrent"))
+                    || p.is_file()
+                {
+                    torrent = Some(p.to_path_buf());
+                    magnet = None;
+                }
+            }
+        }
+        return dashboard::run_dashboard(torrent, magnet, args.listen_port, args.output);
     }
     #[cfg(not(feature = "gui"))]
     let _ = run_gui;
@@ -177,7 +186,10 @@ async fn run_cli(args: Args) -> Result<()> {
     // 1. Swarm discovery
     let mut initial_peers: Vec<SocketAddr> = Vec::new();
     if !meta.trackers.is_empty() {
-        info!("Querying tracker swarm ({} tracker URLs)...", meta.trackers.len());
+        info!(
+            "Querying tracker swarm ({} tracker URLs)...",
+            meta.trackers.len()
+        );
         let params = tracker::AnnounceParams {
             info_hash: &meta.info_hash,
             peer_id: &peer_id,
@@ -336,7 +348,6 @@ async fn run_cli(args: Args) -> Result<()> {
 
     // 6. Monitor session & display live Zero-Copy download progress
     info!("Swarm manager connected. Listening for peer transmissions...");
-    let start_time = Instant::now();
     let mut total_downloaded_bytes: u64 = 0;
     let mut pieces_written = 0;
 

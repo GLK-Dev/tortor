@@ -59,7 +59,12 @@ pub fn human_speed_ru(bytes_per_sec: f64) -> String {
 }
 
 /// Formats estimated time remaining (e.g. `3 мин`, `7 ч`, `∞`, `—`).
-pub fn human_eta_ru(remaining_bytes: u64, speed_bps: f64, is_done: bool, is_paused: bool) -> String {
+pub fn human_eta_ru(
+    remaining_bytes: u64,
+    speed_bps: f64,
+    is_done: bool,
+    is_paused: bool,
+) -> String {
     if is_done && !is_paused {
         return "∞".to_string();
     }

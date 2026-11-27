@@ -37,16 +37,19 @@ const LOGO_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" 
   <rect x="40" y="50" width="12" height="8" fill="url(#gDark)" stroke="#4A5260" stroke-width="1.3"/>
 </svg>"##;
 
-const PLUS_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+const PLUS_SVG: &[u8] =
+    br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <path d="M12 4V20M4 12H20" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="square"/>
 </svg>"##;
 
-const PAUSE_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+const PAUSE_SVG: &[u8] =
+    br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <rect x="6" y="5" width="4" height="14" fill="#FFFFFF"/>
   <rect x="14" y="5" width="4" height="14" fill="#FFFFFF"/>
 </svg>"##;
 
-const PLAY_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+const PLAY_SVG: &[u8] =
+    br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <polygon points="7,5 19,12 7,19" fill="#FFFFFF"/>
 </svg>"##;
 
@@ -54,12 +57,14 @@ const TRASH_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24"
   <path d="M4 7H20M9 7V4H15V7M6 7L7 20H17L18 7M10 11V16M14 11V16" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="miter"/>
 </svg>"##;
 
-const SEARCH_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+const SEARCH_SVG: &[u8] =
+    br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <circle cx="10.5" cy="10.5" r="6" fill="none" stroke="#FFFFFF" stroke-width="2"/>
   <path d="M15 15L20 20" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="square"/>
 </svg>"##;
 
-const INFO_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+const INFO_SVG: &[u8] =
+    br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <circle cx="12" cy="12" r="9" fill="none" stroke="#FFFFFF" stroke-width="2"/>
   <circle cx="12" cy="8" r="1.2" fill="#FFFFFF"/>
   <path d="M12 11.2V16.8" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="square"/>

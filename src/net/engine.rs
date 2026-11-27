@@ -23,7 +23,6 @@ use crate::net::inbound;
 use crate::net::portmap::{self, PortMapStatus};
 use crate::net::session::PeerContext;
 
-
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
     /// First port to try; TCP and QUIC share it. 0 picks any free port.
@@ -231,7 +230,12 @@ impl Engine {
 }
 
 /// The DHT uses the port after the peer port; falls back to any free port.
-async fn start_dht(peer_port: u16) -> (Option<mpsc::Sender<DhtManagerCommand>>, watch::Receiver<usize>) {
+async fn start_dht(
+    peer_port: u16,
+) -> (
+    Option<mpsc::Sender<DhtManagerCommand>>,
+    watch::Receiver<usize>,
+) {
     for port in [peer_port.saturating_add(1), 0] {
         match DhtManager::new(port).await {
             Ok((manager, cmd_tx)) => {

@@ -203,15 +203,8 @@ fn build_meta(
         )));
     }
 
-    let pieces: Vec<[u8; 20]> = info
-        .pieces
-        .chunks_exact(20)
-        .map(|chunk| {
-            let mut hash = [0u8; 20];
-            hash.copy_from_slice(chunk);
-            hash
-        })
-        .collect();
+    let (piece_chunks, _) = info.pieces.as_chunks::<20>();
+    let pieces: Vec<[u8; 20]> = piece_chunks.to_vec();
     let pieces_count = pieces.len() as u32;
 
     Ok(TorrentMeta::new(

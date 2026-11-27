@@ -25,6 +25,15 @@ pub fn session_file() -> PathBuf {
     config_dir().join("session.json")
 }
 
+/// Default folder for new downloads in desktop GUI mode when no directory was configured.
+/// Falls back to the user's home directory or `.` so `.app` / `.desktop` launches do not
+/// default to `/` on macOS/Linux.
+pub fn default_downloads_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 pub fn resume_file(info_hash: &[u8; 20]) -> PathBuf {
     data_dir()
         .join("resume")

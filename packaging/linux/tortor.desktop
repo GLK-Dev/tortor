@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TorTor
+GenericName=BitTorrent Client
+Comment=High-performance BitTorrent client powered by Hey UI and io_uring
+Exec=tortor %U
+Icon=tortor
+Terminal=false
+Categories=Network;FileTransfer;P2P;
+MimeType=application/x-bittorrent;x-scheme-handler/magnet;
+StartupWMClass=tortor

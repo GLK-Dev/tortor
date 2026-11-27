@@ -10,7 +10,7 @@
 
 ## English
 
-TorTor is a BitTorrent client written in Rust with a desktop GUI powered by [Hey](https://github.com/GLK-Dev/Hey). It runs on Windows and Linux, downloads and seeds several torrents at once, and speaks TCP and IPv6 out of the box.
+TorTor is a BitTorrent client written in Rust with a desktop GUI powered by [Hey](https://github.com/GLK-Dev/Hey). It runs on Windows, Linux, and macOS, downloads and seeds several torrents at once, and speaks TCP and IPv6 out of the box.
 
 ### Features
 
@@ -45,7 +45,7 @@ cargo run --release
 
 On Windows you can also run `build.bat` (1 = debug build, 2 = release build).
 
-**Linux:** a C compiler is required to build (`ring`). To run the GUI you need an X11 or Wayland session with OpenGL (Mesa) and the usual desktop libraries (`libxkbcommon`, `libxcb`/`libwayland-client`). The file dialog uses the XDG desktop portal. Without the GUI: `cargo build --release --no-default-features`.
+**Linux:** a C compiler (gcc) and desktop dev headers (pkg-config, libxkbcommon-dev, libwayland-dev, libxcb*-dev, libgtk-3-dev) are required to build the GUI. You can install the built GUI binary, icon, and .desktop launcher via ./packaging/linux/install.sh. Without the GUI: cargo build --release --no-default-features.\n\n**macOS:** requires Xcode Command Line Tools (Metal / Cocoa backend via wgpu & winit). Run ./packaging/macos/build_app.sh after cargo build --release to assemble a standalone TorTor.app bundle.
 
 **Haiku:** the build links the HeOS SDK (`libheos_fs`, `libheos_net`). Set `HEOS_SDK_LIB_DIR` to the `sdk/lib` directory of the HeOS tree (for example `haiku-master/sdk/lib`). Without it, `/boot/system/develop/lib` and `/boot/system/lib` are searched. The BFS Direct-IO backend is Haiku-only; it is not verified on a real BFS volume yet.
 
@@ -68,10 +68,10 @@ Open the port (TCP and UDP, default 6881) in your firewall/router if UPnP is una
 
 **Where data is kept**
 
-| What | Windows | Linux |
-| --- | --- | --- |
-| Session list, limits | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` |
-| Resume data | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` |
+| What | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Session list, limits | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
+| Resume data | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` | `~/Library/Application Support/TorTor/resume/` |
 
 ### Development
 
@@ -95,7 +95,7 @@ Dual-licensed under MIT or Apache-2.0, see [LICENSE](LICENSE).
 <a id="русский"></a>
 ## Русский
 
-TorTor — BitTorrent-клиент на Rust с графическим интерфейсом на базе [Hey](https://github.com/GLK-Dev/Hey). Работает в Windows и Linux, качает и раздаёт несколько торрентов одновременно, поддерживает IPv6.
+TorTor — BitTorrent-клиент на Rust с графическим интерфейсом на базе [Hey](https://github.com/GLK-Dev/Hey). Работает в Windows, Linux и macOS, качает и раздаёт несколько торрентов одновременно, поддерживает IPv6.
 
 ### Возможности
 
@@ -130,7 +130,7 @@ cargo run --release
 
 В Windows можно запустить `build.bat` (1 — отладочная сборка, 2 — релизная).
 
-**Linux:** для сборки нужен компилятор C (`ring`). Для запуска окна нужна сессия X11 или Wayland с OpenGL (Mesa) и обычные библиотеки рабочего стола (`libxkbcommon`, `libxcb`/`libwayland-client`). Диалог выбора файла использует XDG desktop portal. Сборка без GUI: `cargo build --release --no-default-features`.
+**Linux:** для сборки GUI нужен компилятор C (gcc) и dev-пакеты (pkg-config, libxkbcommon-dev, libwayland-dev, libxcb*-dev, libgtk-3-dev). Скрипт ./packaging/linux/install.sh устанавливает бинарник, иконку и .desktop-ярлык в меню приложений. Сборка без GUI: cargo build --release --no-default-features.\n\n**macOS:** требуются Xcode Command Line Tools (графический бэкенд Metal / Cocoa через wgpu и winit). После cargo build --release скрипт ./packaging/macos/build_app.sh собирает готовый бандл TorTor.app с иконкой и ассоциациями .torrent / magnet:.
 
 ### Использование
 
@@ -151,10 +151,10 @@ tortor [ПАРАМЕТРЫ] [MAGNET]
 
 **Где хранятся данные**
 
-| Что | Windows | Linux |
-| --- | --- | --- |
-| Список сессий, лимиты | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` |
-| Данные возобновления | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` |
+| Что | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Список сессий, лимиты | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
+| Данные возобновления | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` | `~/Library/Application Support/TorTor/resume/` |
 
 ### Разработка
 

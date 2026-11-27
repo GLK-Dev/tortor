@@ -48,7 +48,9 @@ pub struct Contact {
 /// Compact IPv4 node list: 20-byte id, 4-byte address, 2-byte port per entry.
 pub fn decode_compact_nodes(bytes: &[u8]) -> Vec<Contact> {
     bytes
-        .chunks_exact(26)
+        .as_chunks::<26>()
+        .0
+        .iter()
         .filter_map(|chunk| {
             let addr = crate::net::pex::decode_compact_ipv4(&chunk[20..26])
                 .into_iter()
@@ -64,7 +66,9 @@ pub fn decode_compact_nodes(bytes: &[u8]) -> Vec<Contact> {
 /// Compact IPv6 node list (BEP 32): 20-byte id, 16-byte address, 2-byte port.
 pub fn decode_compact_nodes6(bytes: &[u8]) -> Vec<Contact> {
     bytes
-        .chunks_exact(38)
+        .as_chunks::<38>()
+        .0
+        .iter()
         .filter_map(|chunk| {
             let addr = crate::net::pex::decode_compact_ipv6(&chunk[20..38])
                 .into_iter()

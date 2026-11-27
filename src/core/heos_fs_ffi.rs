@@ -30,7 +30,8 @@ pub const HEOS_FS_DIRECT_IO: u32 = 1 << 4;
 
 extern "C" {
     fn heos_fs_create_dir_all(path: *const c_char) -> HeosStatus;
-    fn heos_fs_open(path: *const c_char, flags: u32, out_handle: *mut HeosFileHandle) -> HeosStatus;
+    fn heos_fs_open(path: *const c_char, flags: u32, out_handle: *mut HeosFileHandle)
+        -> HeosStatus;
     fn heos_fs_read(handle: HeosFileHandle, buffer: *mut u8, offset: u64, len: usize) -> isize;
     fn heos_fs_write(handle: HeosFileHandle, buffer: *const u8, offset: u64, len: usize) -> isize;
     fn heos_fs_flush(handle: HeosFileHandle) -> HeosStatus;
@@ -62,7 +63,11 @@ impl HeosFile {
         let c_path = CString::new(p_str).context("null byte in path")?;
 
         let status = unsafe { heos_fs_create_dir_all(c_path.as_ptr()) };
-        ensure!(status == HEOS_OK, "heos_fs_create_dir_all failed ({})", status);
+        ensure!(
+            status == HEOS_OK,
+            "heos_fs_create_dir_all failed ({})",
+            status
+        );
         Ok(())
     }
 

@@ -1812,10 +1812,12 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "hey-core"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 
 [[package]]
 name = "hey-draw"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
 ]
@@ -1823,6 +1825,7 @@ dependencies = [
 [[package]]
 name = "hey-i18n"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "fluent-bundle",
  "unic-langid",
@@ -1831,6 +1834,7 @@ dependencies = [
 [[package]]
 name = "hey-icons"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
  "hey-draw",
@@ -1840,6 +1844,7 @@ dependencies = [
 [[package]]
 name = "hey-layout"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
 ]
@@ -1847,6 +1852,7 @@ dependencies = [
 [[package]]
 name = "hey-render-cpu"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
  "hey-draw",
@@ -1857,6 +1863,7 @@ dependencies = [
 [[package]]
 name = "hey-render-gpu"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "bytemuck",
  "hey-core",
@@ -1869,6 +1876,7 @@ dependencies = [
 [[package]]
 name = "hey-shell"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -1891,6 +1899,7 @@ dependencies = [
 [[package]]
 name = "hey-style"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
  "serde_json",
@@ -1899,6 +1908,7 @@ dependencies = [
 [[package]]
 name = "hey-text"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "fontdue",
  "harfrust",
@@ -1911,6 +1921,7 @@ dependencies = [
 [[package]]
 name = "hey-widgets"
 version = "0.1.0"
+source = "git+https://github.com/GLK-Dev/Hey.git?rev=85848125e141d79f228b60566bf7f1cc77a9018c#85848125e141d79f228b60566bf7f1cc77a9018c"
 dependencies = [
  "hey-core",
  "hey-draw",
@@ -4642,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "tortor"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "anyhow",
  "async-trait",

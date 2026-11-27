@@ -561,17 +561,10 @@ mod tests {
     async fn release_handles_unlocks_files_and_allows_reads_or_deletion() {
         let dir = temp("release");
         let data: Vec<u8> = (0..32u8).collect();
-        let mut disk = StandardDisk::init_with_options(
-            &dir,
-            32,
-            16,
-            None,
-            "movie.bin",
-            None,
-            false,
-        )
-        .await
-        .unwrap();
+        let mut disk =
+            StandardDisk::init_with_options(&dir, 32, 16, None, "movie.bin", None, false)
+                .await
+                .unwrap();
 
         assert!(!dir.join("movie.bin").exists());
         disk.write_piece(0, data[0..16].to_vec()).await.unwrap();
@@ -599,17 +592,31 @@ mod tests {
         std::fs::write(dir.join("bundle").join("b.bin"), vec![2u8; 25]).unwrap();
 
         let files = vec![file(15, &["a.bin"]), file(25, &["b.bin"])];
-        let (valid, changed) =
-            filter_completed_against_disk(&dir, "bundle", 40, 10, Some(&files), None, &[0, 1, 2, 3])
-                .unwrap();
+        let (valid, changed) = filter_completed_against_disk(
+            &dir,
+            "bundle",
+            40,
+            10,
+            Some(&files),
+            None,
+            &[0, 1, 2, 3],
+        )
+        .unwrap();
         assert_eq!(valid, vec![0, 1, 2, 3]);
         assert!(!changed);
 
         // Delete b.bin (covers pieces 1, 2, 3; piece 0 belongs only to a.bin).
         std::fs::remove_file(dir.join("bundle").join("b.bin")).unwrap();
-        let (valid, changed) =
-            filter_completed_against_disk(&dir, "bundle", 40, 10, Some(&files), None, &[0, 1, 2, 3])
-                .unwrap();
+        let (valid, changed) = filter_completed_against_disk(
+            &dir,
+            "bundle",
+            40,
+            10,
+            Some(&files),
+            None,
+            &[0, 1, 2, 3],
+        )
+        .unwrap();
         assert_eq!(valid, vec![0]);
         assert!(changed);
 

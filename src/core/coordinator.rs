@@ -294,7 +294,9 @@ pub async fn run_coordinator(
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
                     send_piece_map(&ui_sender, manager).await;
 
-                    if manager.is_done() || last_persist.elapsed() >= crate::core::settings::resume_interval() {
+                    if manager.is_done()
+                        || last_persist.elapsed() >= crate::core::settings::resume_interval()
+                    {
                         // Progress may only be recorded once the data is on disk.
                         if let Err(err) = disk_writer.flush().await {
                             error!("failed to flush piece data: {}", err);

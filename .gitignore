@@ -9,3 +9,5 @@ tortor_v1.5.0-alpha_windows.zip
 *.exe
 *.pdb
 .gitignore
+/dist
+*.tar.gz

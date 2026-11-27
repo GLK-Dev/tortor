@@ -23,18 +23,16 @@ use crate::core::settings::{apply_runtime_settings, ClientSettings};
 use crate::net::engine::{Engine, EngineOptions};
 use crate::net::portmap::PortMapStatus;
 
-use super::backend::{
-    apply_speed_limits, spawn_session, PeerRow, ProbeState, TorrentSessionState,
-};
+use super::backend::{apply_speed_limits, spawn_session, PeerRow, ProbeState, TorrentSessionState};
 use super::i18n::{build_i18n, format_eta, format_size, format_speed};
 use super::theme::{
     tortor_theme, ACCENT, CYAN, GREEN, INSPECTOR_BG, LINE, RED, SIDEBAR_BG, STATUSBAR_BG, TEXT,
     TEXT_DIM, TEXT_MUTED, WINDOW_BG,
 };
 use super::widgets::{
-    ActionButton, FilterInput, InspectorTabs, LogoBadge, ModalBackdrop, PieceMapBar, ScaledBox, SectionLabel,
-    SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader, TorrentRow,
-    TorrentRowProps,
+    ActionButton, FilterInput, InspectorTabs, LogoBadge, ModalBackdrop, PieceMapBar, ScaledBox,
+    SectionLabel, SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader,
+    TorrentRow, TorrentRowProps,
 };
 
 const TAGS: [&str; 3] = ["system", "video", "data"];
@@ -316,11 +314,18 @@ impl Model {
                 }
                 CoreMessage::PausedState(paused) => {
                     session.is_paused = paused;
-                    session.status = if paused { "Пауза" } else { "Загрузка" }.to_string();
+                    session.status = if paused {
+                        "Пауза"
+                    } else {
+                        "Загрузка"
+                    }
+                    .to_string();
                 }
                 CoreMessage::TorrentLoaded(meta) => {
                     session.total_pieces = meta.pieces_count;
-                    session.logs.push(format!("[ENGINE] Загружен: {}", meta.name));
+                    session
+                        .logs
+                        .push(format!("[ENGINE] Загружен: {}", meta.name));
                     session.meta = Some(meta);
                 }
                 CoreMessage::MetadataReady(meta) => {
@@ -345,7 +350,9 @@ impl Model {
                 CoreMessage::DownloadComplete => {
                     session.global_progress = 1.0;
                     session.status = "Готово".to_string();
-                    session.logs.push("[ENGINE] Загрузка завершена.".to_string());
+                    session
+                        .logs
+                        .push("[ENGINE] Загрузка завершена.".to_string());
                 }
                 CoreMessage::ShutdownComplete => completed_shutdowns.push(id),
                 CoreMessage::PeerFound(addr) => {
@@ -362,7 +369,9 @@ impl Model {
                         .logs
                         .push(format!("[TRACKER] Получено пиров: {count}"));
                 }
-                CoreMessage::ProbeQueued(addr) => update_peer_state(session, addr, ProbeState::Queued),
+                CoreMessage::ProbeQueued(addr) => {
+                    update_peer_state(session, addr, ProbeState::Queued)
+                }
                 CoreMessage::ProbeStarted(addr) => {
                     update_peer_state(session, addr, ProbeState::Probing)
                 }
@@ -434,7 +443,11 @@ impl Model {
     }
 }
 
-fn update_peer_state(session: &mut TorrentSessionState, addr: std::net::SocketAddr, state: ProbeState) {
+fn update_peer_state(
+    session: &mut TorrentSessionState,
+    addr: std::net::SocketAddr,
+    state: ProbeState,
+) {
     if let Some(row) = session.peers.iter_mut().find(|row| row.addr == addr) {
         row.state = state;
     }
@@ -488,7 +501,9 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                         s.is_paused = true;
                         let _ = s.command_tx.send(CoreCommand::Pause);
                         let src = s.source.clone();
-                        if let Some(e) = m.session_store.entries.iter_mut().find(|e| e.source == src) {
+                        if let Some(e) =
+                            m.session_store.entries.iter_mut().find(|e| e.source == src)
+                        {
                             e.is_paused = true;
                             let _ = m.session_store.save_default();
                         }
@@ -510,7 +525,9 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                             let _ = s.command_tx.send(CoreCommand::Resume);
                         }
                         let src = s.source.clone();
-                        if let Some(e) = m.session_store.entries.iter_mut().find(|e| e.source == src) {
+                        if let Some(e) =
+                            m.session_store.entries.iter_mut().find(|e| e.source == src)
+                        {
                             e.is_paused = false;
                             let _ = m.session_store.save_default();
                         }
@@ -650,7 +667,9 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
             m.modal = Some(ActiveModal::About);
         }
         Msg::OpenSettingsModal => {
-            m.modal = Some(ActiveModal::Settings(SettingsDraft::from_store(&m.session_store)));
+            m.modal = Some(ActiveModal::Settings(SettingsDraft::from_store(
+                &m.session_store,
+            )));
         }
         Msg::SelectSettingsTab(idx) => {
             if let Some(ActiveModal::Settings(draft)) = &mut m.modal {
@@ -700,7 +719,11 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                     &ClientSettings::default(),
                     0,
                     0,
-                    m.session_store.language.as_deref().unwrap_or("ru").to_string(),
+                    m.session_store
+                        .language
+                        .as_deref()
+                        .unwrap_or("ru")
+                        .to_string(),
                     tab,
                 );
             }
@@ -819,11 +842,7 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
     Command::none()
 }
 fn row_props(i18n: &I18n, s: &TorrentSessionState, selected: bool) -> TorrentRowProps {
-    let total_bytes = s
-        .meta
-        .as_ref()
-        .and_then(|m| m.total_length)
-        .unwrap_or(0);
+    let total_bytes = s.meta.as_ref().and_then(|m| m.total_length).unwrap_or(0);
     let size_text = if total_bytes > 0 {
         format_size(i18n, total_bytes)
     } else {
@@ -898,7 +917,9 @@ fn view_sidebar(m: &Model) -> View<Msg> {
         ));
     }
 
-    items.push(View::leaf("sb_tags_gap", (), |ui, p| ScaledBox::add(ui, p, 0.0, 14.0)));
+    items.push(View::leaf("sb_tags_gap", (), |ui, p| {
+        ScaledBox::add(ui, p, 0.0, 14.0)
+    }));
     let tags_hdr = m.i18n.tr("sec-tags");
     items.push(View::leaf("sb_tags_hdr", tags_hdr.clone(), move |ui, p| {
         SectionLabel::add(ui, p, &tags_hdr, 16.0)
@@ -964,7 +985,9 @@ fn view_sidebar(m: &Model) -> View<Msg> {
             )
         },
     ));
-    items.push(View::leaf("sb_bottom_pad", (), |ui, p| ScaledBox::add(ui, p, 0.0, 8.0)));
+    items.push(View::leaf("sb_bottom_pad", (), |ui, p| {
+        ScaledBox::add(ui, p, 0.0, 8.0)
+    }));
 
     Surface::container(
         "sidebar_wrap",
@@ -1188,12 +1211,12 @@ fn view_inspector_body(m: &Model) -> Vec<View<Msg>> {
                         ProbeState::Idle => m.i18n.tr("peer-idle"),
                         ProbeState::Queued => m.i18n.tr("peer-queued"),
                         ProbeState::Probing => m.i18n.tr("peer-probing"),
-                        ProbeState::Success(msg) => {
-                            m.i18n.tr_args("peer-active", &[("msg", Arg::Str(msg.clone()))])
-                        }
-                        ProbeState::Failed(err) => {
-                            m.i18n.tr_args("peer-failed", &[("err", Arg::Str(err.clone()))])
-                        }
+                        ProbeState::Success(msg) => m
+                            .i18n
+                            .tr_args("peer-active", &[("msg", Arg::Str(msg.clone()))]),
+                        ProbeState::Failed(err) => m
+                            .i18n
+                            .tr_args("peer-failed", &[("err", Arg::Str(err.clone()))]),
                     };
                     let line = if let Some(t) = &peer.telemetry {
                         m.i18n.tr_args(
@@ -1202,7 +1225,10 @@ fn view_inspector_body(m: &Model) -> Vec<View<Msg>> {
                                 ("addr", Arg::Str(peer.addr.to_string())),
                                 ("state", Arg::Str(st_txt)),
                                 ("inflight", Arg::Num(t.in_flight_requests as f64)),
-                                ("rx", Arg::Str(format_size(&m.i18n, t.downloaded_bytes as u64))),
+                                (
+                                    "rx",
+                                    Arg::Str(format_size(&m.i18n, t.downloaded_bytes as u64)),
+                                ),
                                 ("retries", Arg::Num(t.retries as f64)),
                             ],
                         )
@@ -1303,8 +1329,10 @@ fn edit_settings(m: &mut Model, f: impl FnOnce(&mut SettingsDraft)) {
 
 fn parse_u64_field(m: &Model, raw: &str, field_key: &str) -> Result<u64, String> {
     raw.trim().parse::<u64>().map_err(|_| {
-        m.i18n
-            .tr_args("set-err-invalid", &[("field", Arg::Str(m.i18n.tr(field_key)))])
+        m.i18n.tr_args(
+            "set-err-invalid",
+            &[("field", Arg::Str(m.i18n.tr(field_key)))],
+        )
     })
 }
 
@@ -1314,8 +1342,10 @@ fn apply_saved_settings(m: &mut Model) {
     };
     let parsed = (|| -> Result<(ClientSettings, u64, u64), String> {
         let port = draft.listen_port.trim().parse::<u16>().map_err(|_| {
-            m.i18n
-                .tr_args("set-err-invalid", &[("field", Arg::Str(m.i18n.tr("set-listen-port")))])
+            m.i18n.tr_args(
+                "set-err-invalid",
+                &[("field", Arg::Str(m.i18n.tr("set-listen-port")))],
+            )
         })?;
         let mut dl = parse_u64_field(m, &draft.dl_limit, "set-dl-limit")?;
         let mut ul = parse_u64_field(m, &draft.ul_limit, "set-ul-limit")?;
@@ -1328,7 +1358,8 @@ fn apply_saved_settings(m: &mut Model) {
         let max_peers = parse_u64_field(m, &draft.max_peers, "set-max-peers")? as usize;
         let max_inbound = parse_u64_field(m, &draft.max_inbound, "set-max-inbound")? as usize;
         let upload_slots = parse_u64_field(m, &draft.upload_slots, "set-upload-slots")? as usize;
-        let pipeline_depth = parse_u64_field(m, &draft.pipeline_depth, "set-pipeline-depth")? as usize;
+        let pipeline_depth =
+            parse_u64_field(m, &draft.pipeline_depth, "set-pipeline-depth")? as usize;
         let connect_timeout = parse_u64_field(m, &draft.connect_timeout, "set-connect-timeout")?;
         let resume_interval = parse_u64_field(m, &draft.resume_interval, "set-resume-interval")?;
         let settings = ClientSettings {
@@ -1353,9 +1384,10 @@ fn apply_saved_settings(m: &mut Model) {
 
     match parsed {
         Ok((settings, dl, ul)) => {
-            if let Some(dir) = &settings.default_output_dir {
-                m.default_output_dir = dir.clone();
-            }
+            m.default_output_dir = settings
+                .default_output_dir
+                .clone()
+                .unwrap_or_else(crate::core::fsutil::default_downloads_dir);
             m.session_store.settings = settings.clone();
             m.session_store.download_limit_kib = dl;
             m.session_store.upload_limit_kib = ul;
@@ -1395,9 +1427,11 @@ fn labeled_setting_row(
                     move |ui, p| StyledLabel::add(ui, p, &label, 12.5, TEXT_MUTED),
                 )],
             ),
-            View::leaf(Key::Name(format!("{key}_in")), (val_empty, width as u32), move |ui, p| {
-                TextInput::add(ui, p, &value, width, Callback::new(on_change))
-            }),
+            View::leaf(
+                Key::Name(format!("{key}_in")),
+                (val_empty, width as u32),
+                move |ui, p| TextInput::add(ui, p, &value, width, Callback::new(on_change)),
+            ),
         ],
     )
 }
@@ -1428,8 +1462,16 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
             let browse_lbl = m.i18n.tr("btn-folder");
             let clear_lbl = m.i18n.tr("set-btn-clear");
             let lang_lbl = m.i18n.tr("set-language");
-            let ru_var = if draft.language == "ru" { Variant::Primary } else { Variant::Secondary };
-            let en_var = if draft.language == "en" { Variant::Primary } else { Variant::Secondary };
+            let ru_var = if draft.language == "ru" {
+                Variant::Primary
+            } else {
+                Variant::Secondary
+            };
+            let en_var = if draft.language == "en" {
+                Variant::Primary
+            } else {
+                Variant::Secondary
+            };
             let paused_lbl = m.i18n.tr("set-start-paused");
             let paused_v = draft.start_paused;
             let compact_lbl = m.i18n.tr("set-compact-ui");
@@ -1451,10 +1493,22 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
                             })],
                         ),
                         View::leaf("set_dir_pick", browse_lbl.clone(), move |ui, p| {
-                            Button::add(ui, p, &browse_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsPickDir))
+                            Button::add(
+                                ui,
+                                p,
+                                &browse_lbl,
+                                Variant::Secondary,
+                                Callback::new(|_| Msg::SettingsPickDir),
+                            )
                         }),
                         View::leaf("set_dir_clr", clear_lbl.clone(), move |ui, p| {
-                            Button::add(ui, p, &clear_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsClearDir))
+                            Button::add(
+                                ui,
+                                p,
+                                &clear_lbl,
+                                Variant::Secondary,
+                                Callback::new(|_| Msg::SettingsClearDir),
+                            )
                         }),
                     ],
                 ),
@@ -1465,24 +1519,58 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
                         View::container(
                             "set_lang_lbl_wrap",
                             Style::column().grow(1.0).shrink(1.0),
-                            vec![View::leaf("set_lang_lbl", lang_lbl.clone(), move |ui, p| {
-                                StyledLabel::add(ui, p, &lang_lbl, 12.5, TEXT_MUTED)
-                            })],
+                            vec![View::leaf(
+                                "set_lang_lbl",
+                                lang_lbl.clone(),
+                                move |ui, p| StyledLabel::add(ui, p, &lang_lbl, 12.5, TEXT_MUTED),
+                            )],
                         ),
                         View::leaf("set_lang_ru", ru_var as u8, move |ui, p| {
-                            Button::add(ui, p, "Русский", ru_var, Callback::new(|_| Msg::SettingsLanguage("ru")))
+                            Button::add(
+                                ui,
+                                p,
+                                "Русский",
+                                ru_var,
+                                Callback::new(|_| Msg::SettingsLanguage("ru")),
+                            )
                         }),
                         View::leaf("set_lang_en", en_var as u8, move |ui, p| {
-                            Button::add(ui, p, "English", en_var, Callback::new(|_| Msg::SettingsLanguage("en")))
+                            Button::add(
+                                ui,
+                                p,
+                                "English",
+                                en_var,
+                                Callback::new(|_| Msg::SettingsLanguage("en")),
+                            )
                         }),
                     ],
                 ),
-                View::leaf("set_paused_cb", (paused_v, paused_lbl.clone()), move |ui, p| {
-                    Checkbox::add(ui, p, &paused_lbl, paused_v, Callback::new(Msg::SettingsStartPaused))
-                }),
-                View::leaf("set_compact_cb", (compact_v, compact_lbl.clone()), move |ui, p| {
-                    Checkbox::add(ui, p, &compact_lbl, compact_v, Callback::new(Msg::SettingsCompactUi))
-                }),
+                View::leaf(
+                    "set_paused_cb",
+                    (paused_v, paused_lbl.clone()),
+                    move |ui, p| {
+                        Checkbox::add(
+                            ui,
+                            p,
+                            &paused_lbl,
+                            paused_v,
+                            Callback::new(Msg::SettingsStartPaused),
+                        )
+                    },
+                ),
+                View::leaf(
+                    "set_compact_cb",
+                    (compact_v, compact_lbl.clone()),
+                    move |ui, p| {
+                        Checkbox::add(
+                            ui,
+                            p,
+                            &compact_lbl,
+                            compact_v,
+                            Callback::new(Msg::SettingsCompactUi),
+                        )
+                    },
+                ),
             ]
         }
         SettingsTab::Network => {
@@ -1519,16 +1607,64 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
             ]
         }
         SettingsTab::Connections => vec![
-            labeled_setting_row("set_dl", m.i18n.tr("set-dl-limit"), draft.dl_limit.clone(), 110.0, Msg::SettingsDlLimit),
-            labeled_setting_row("set_ul", m.i18n.tr("set-ul-limit"), draft.ul_limit.clone(), 110.0, Msg::SettingsUlLimit),
-            labeled_setting_row("set_mp", m.i18n.tr("set-max-peers"), draft.max_peers.clone(), 110.0, Msg::SettingsMaxPeers),
-            labeled_setting_row("set_mi", m.i18n.tr("set-max-inbound"), draft.max_inbound.clone(), 110.0, Msg::SettingsMaxInbound),
-            labeled_setting_row("set_us", m.i18n.tr("set-upload-slots"), draft.upload_slots.clone(), 110.0, Msg::SettingsUploadSlots),
+            labeled_setting_row(
+                "set_dl",
+                m.i18n.tr("set-dl-limit"),
+                draft.dl_limit.clone(),
+                110.0,
+                Msg::SettingsDlLimit,
+            ),
+            labeled_setting_row(
+                "set_ul",
+                m.i18n.tr("set-ul-limit"),
+                draft.ul_limit.clone(),
+                110.0,
+                Msg::SettingsUlLimit,
+            ),
+            labeled_setting_row(
+                "set_mp",
+                m.i18n.tr("set-max-peers"),
+                draft.max_peers.clone(),
+                110.0,
+                Msg::SettingsMaxPeers,
+            ),
+            labeled_setting_row(
+                "set_mi",
+                m.i18n.tr("set-max-inbound"),
+                draft.max_inbound.clone(),
+                110.0,
+                Msg::SettingsMaxInbound,
+            ),
+            labeled_setting_row(
+                "set_us",
+                m.i18n.tr("set-upload-slots"),
+                draft.upload_slots.clone(),
+                110.0,
+                Msg::SettingsUploadSlots,
+            ),
         ],
         SettingsTab::Performance => vec![
-            labeled_setting_row("set_pipe", m.i18n.tr("set-pipeline-depth"), draft.pipeline_depth.clone(), 110.0, Msg::SettingsPipelineDepth),
-            labeled_setting_row("set_tout", m.i18n.tr("set-connect-timeout"), draft.connect_timeout.clone(), 110.0, Msg::SettingsConnectTimeout),
-            labeled_setting_row("set_res", m.i18n.tr("set-resume-interval"), draft.resume_interval.clone(), 110.0, Msg::SettingsResumeInterval),
+            labeled_setting_row(
+                "set_pipe",
+                m.i18n.tr("set-pipeline-depth"),
+                draft.pipeline_depth.clone(),
+                110.0,
+                Msg::SettingsPipelineDepth,
+            ),
+            labeled_setting_row(
+                "set_tout",
+                m.i18n.tr("set-connect-timeout"),
+                draft.connect_timeout.clone(),
+                110.0,
+                Msg::SettingsConnectTimeout,
+            ),
+            labeled_setting_row(
+                "set_res",
+                m.i18n.tr("set-resume-interval"),
+                draft.resume_interval.clone(),
+                110.0,
+                Msg::SettingsResumeInterval,
+            ),
         ],
     };
 
@@ -1542,11 +1678,19 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
             StyledLabel::add(ui, p, &title_lbl, 16.0, TEXT)
         }),
         View::leaf("set_tabs", (tabs.clone(), active_idx), move |ui, p| {
-            InspectorTabs::add(ui, p, tabs, active_idx, Callback::new(Msg::SelectSettingsTab))
+            InspectorTabs::add(
+                ui,
+                p,
+                tabs,
+                active_idx,
+                Callback::new(Msg::SelectSettingsTab),
+            )
         }),
         View::container(
             "set_tab_body",
-            Style::column().gap(10.0).padding(Insets::symmetric(0.0, 4.0)),
+            Style::column()
+                .gap(10.0)
+                .padding(Insets::symmetric(0.0, 4.0)),
             tab_body,
         ),
         View::leaf("set_note", note_lbl.clone(), move |ui, p| {
@@ -1563,14 +1707,32 @@ fn view_settings_modal(m: &Model, draft: &SettingsDraft) -> Vec<View<Msg>> {
         Style::row().gap(8.0).align_items(Align::Center),
         vec![
             View::leaf("set_reset", reset_lbl.clone(), move |ui, p| {
-                Button::add(ui, p, &reset_lbl, Variant::Secondary, Callback::new(|_| Msg::SettingsResetDefaults))
+                Button::add(
+                    ui,
+                    p,
+                    &reset_lbl,
+                    Variant::Secondary,
+                    Callback::new(|_| Msg::SettingsResetDefaults),
+                )
             }),
             View::container("set_btn_sp", Style::spacer(), vec![]),
             View::leaf("set_cancel", cancel_lbl.clone(), move |ui, p| {
-                Button::add(ui, p, &cancel_lbl, Variant::Secondary, Callback::new(|_| Msg::CloseModal))
+                Button::add(
+                    ui,
+                    p,
+                    &cancel_lbl,
+                    Variant::Secondary,
+                    Callback::new(|_| Msg::CloseModal),
+                )
             }),
             View::leaf("set_save", save_lbl.clone(), move |ui, p| {
-                Button::add(ui, p, &save_lbl, Variant::Primary, Callback::new(|_| Msg::SaveSettings))
+                Button::add(
+                    ui,
+                    p,
+                    &save_lbl,
+                    Variant::Primary,
+                    Callback::new(|_| Msg::SaveSettings),
+                )
             }),
         ],
     ));
@@ -1683,13 +1845,7 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                     StyledLabel::add(ui, p, &mag_lbl, 12.0, TEXT_MUTED)
                 }),
                 View::leaf("add_mag_in", mag_val.is_empty(), move |ui, p| {
-                    TextInput::add(
-                        ui,
-                        p,
-                        &mag_val,
-                        440.0,
-                        Callback::new(Msg::AddMagnetText),
-                    )
+                    TextInput::add(ui, p, &mag_val, 440.0, Callback::new(Msg::AddMagnetText))
                 }),
                 View::container(
                     "add_dir_row",
@@ -1717,9 +1873,19 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                 {
                     let paused_lbl = m.i18n.tr("add-start-paused");
                     let paused_v = *start_paused;
-                    View::leaf("add_paused_cb", (paused_v, paused_lbl.clone()), move |ui, p| {
-                        Checkbox::add(ui, p, &paused_lbl, paused_v, Callback::new(Msg::SetAddStartPaused))
-                    })
+                    View::leaf(
+                        "add_paused_cb",
+                        (paused_v, paused_lbl.clone()),
+                        move |ui, p| {
+                            Checkbox::add(
+                                ui,
+                                p,
+                                &paused_lbl,
+                                paused_v,
+                                Callback::new(Msg::SetAddStartPaused),
+                            )
+                        },
+                    )
                 },
             ];
             if let Some(err) = err_opt {
@@ -1761,9 +1927,7 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                 .map(|s| s.display_name().to_string())
                 .unwrap_or_default();
             let title_lbl = m.i18n.tr("modal-del-title");
-            let msg = m
-                .i18n
-                .tr_args("modal-del-msg", &[("name", Arg::Str(name))]);
+            let msg = m.i18n.tr_args("modal-del-msg", &[("name", Arg::Str(name))]);
             let cancel_lbl = m.i18n.tr("btn-cancel");
             let list_lbl = m.i18n.tr("btn-remove-list");
             let disk_lbl = m.i18n.tr("btn-delete-disk");
@@ -1874,9 +2038,10 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
         ActiveModal::Settings(draft) => view_settings_modal(m, draft),
         ActiveModal::About => {
             let title_lbl = m.i18n.tr("modal-about-title");
-            let ver_lbl = m
-                .i18n
-                .tr_args("about-version", &[("ver", Arg::Str(env!("CARGO_PKG_VERSION").into()))]);
+            let ver_lbl = m.i18n.tr_args(
+                "about-version",
+                &[("ver", Arg::Str(env!("CARGO_PKG_VERSION").into()))],
+            );
             let desc_lbl = m.i18n.tr("about-desc");
             let author_lbl = m.i18n.tr("about-author");
             let license_lbl = m.i18n.tr("about-license");
@@ -1917,15 +2082,19 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                 View::container(
                     "about_btns",
                     Style::row().gap(8.0).justify(Justify::End),
-                    vec![View::leaf("about_close", close_lbl.clone(), move |ui, p| {
-                        Button::add(
-                            ui,
-                            p,
-                            &close_lbl,
-                            Variant::Primary,
-                            Callback::new(|_| Msg::CloseModal),
-                        )
-                    })],
+                    vec![View::leaf(
+                        "about_close",
+                        close_lbl.clone(),
+                        move |ui, p| {
+                            Button::add(
+                                ui,
+                                p,
+                                &close_lbl,
+                                Variant::Primary,
+                                Callback::new(|_| Msg::CloseModal),
+                            )
+                        },
+                    )],
                 ),
             ]
         }
@@ -1937,7 +2106,12 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
         460.0
     };
     let mut dialog_children = dialog_children;
-    dialog_children.insert(0, View::leaf("modal_min_w", min_w as u32, move |ui, p| ScaledBox::add(ui, p, min_w, 0.0)));
+    dialog_children.insert(
+        0,
+        View::leaf("modal_min_w", min_w as u32, move |ui, p| {
+            ScaledBox::add(ui, p, min_w, 0.0)
+        }),
+    );
     let card = Surface::container(
         "modal_card",
         Style::column(),
@@ -2099,9 +2273,13 @@ fn view(m: &Model) -> Vec<View<Msg>> {
         .map(|id| {
             let s = &m.sessions[&id];
             let props = row_props(&m.i18n, s, m.selected_id == Some(id));
-            View::leaf(Key::Name(format!("row_{id}")), props.clone(), move |ui, p| {
-                TorrentRow::add(ui, p, props, Callback::new(move |_| Msg::SelectTorrent(id)))
-            })
+            View::leaf(
+                Key::Name(format!("row_{id}")),
+                props.clone(),
+                move |ui, p| {
+                    TorrentRow::add(ui, p, props, Callback::new(move |_| Msg::SelectTorrent(id)))
+                },
+            )
         })
         .collect();
 
@@ -2176,7 +2354,9 @@ fn view(m: &Model) -> Vec<View<Msg>> {
                 "insp_body_row",
                 Style::row(),
                 vec![
-                    View::leaf("insp_h_strut", (), |ui, p| ScaledBox::add(ui, p, 0.0, 144.0)),
+                    View::leaf("insp_h_strut", (), |ui, p| {
+                        ScaledBox::add(ui, p, 0.0, 144.0)
+                    }),
                     View::container(
                         "insp_body",
                         Style::column()
@@ -2205,7 +2385,10 @@ fn view(m: &Model) -> Vec<View<Msg>> {
     } else {
         m.i18n.tr_args(
             "limit-status",
-            &[("dl", Arg::Num(dl_lim as f64)), ("ul", Arg::Num(ul_lim as f64))],
+            &[
+                ("dl", Arg::Num(dl_lim as f64)),
+                ("ul", Arg::Num(ul_lim as f64)),
+            ],
         )
     };
     let dht_nodes = *m.engine.dht_nodes.borrow();
@@ -2325,7 +2508,7 @@ pub fn run_dashboard(
             .settings
             .default_output_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from("."))
+            .unwrap_or_else(crate::core::fsutil::default_downloads_dir)
     });
     let compact_ui = session_store.settings.compact_ui;
 
@@ -2477,7 +2660,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(full_bg_1, "background should cover full 1180x740 window without outer margins");
+        assert!(
+            full_bg_1,
+            "background should cover full 1180x740 window without outer margins"
+        );
 
         // Resized larger viewport 1680x1020
         let dl2 = ui.paint(Size::new(1680.0, 1020.0));
@@ -2487,7 +2673,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(full_bg_2, "app_shell must stretch cleanly to 1680x1020 on window resize");
+        assert!(
+            full_bg_2,
+            "app_shell must stretch cleanly to 1680x1020 on window resize"
+        );
 
         // Also ensure sidebar height & bottom status bar track the new height (no 450px cap)
         let status_at_bottom = dl2.cmds().iter().any(|cmd| match cmd {
@@ -2496,7 +2685,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(status_at_bottom, "status bar must stay anchored to bottom at y=1020");
+        assert!(
+            status_at_bottom,
+            "status bar must stay anchored to bottom at y=1020"
+        );
 
         // Verify system text scale (1.6x) scales heights proportionally
         let mut ui_scaled: Ui<Msg> = Ui::new(
@@ -2516,10 +2708,14 @@ mod tests {
             }
             _ => false,
         });
-        let actual_status_rects: Vec<_> = dl3.cmds().iter().filter_map(|cmd| match cmd {
-            hey_draw::DrawCmd::Rect { rect, fill, .. } if *fill == STATUSBAR_BG => Some(*rect),
-            _ => None,
-        }).collect();
+        let actual_status_rects: Vec<_> = dl3
+            .cmds()
+            .iter()
+            .filter_map(|cmd| match cmd {
+                hey_draw::DrawCmd::Rect { rect, fill, .. } if *fill == STATUSBAR_BG => Some(*rect),
+                _ => None,
+            })
+            .collect();
         assert!(scaled_status, "status bar must scale with text_scale=1.6 and stay anchored at bottom; got: {actual_status_rects:?}");
 
         // Verify About modal opens and closes cleanly in both RU and EN
@@ -2540,7 +2736,7 @@ mod tests {
         let _ = update(&mut model_about, Msg::CloseModal);
         assert!(model_about.modal.is_none());
 
-        let _ = rt.block_on(engine.shutdown_graceful());
+        rt.block_on(engine.shutdown_graceful());
     }
 
     #[test]
@@ -2615,13 +2811,19 @@ mod tests {
         assert_eq!(crate::core::settings::max_active_peers(), 42);
         assert_eq!(crate::core::settings::upload_slots(), 12);
         assert_eq!(crate::core::settings::pipeline_depth(), 24);
-        assert_eq!(crate::core::settings::connect_timeout(), Duration::from_secs(9));
-        assert_eq!(crate::core::settings::resume_interval(), Duration::from_secs(10));
+        assert_eq!(
+            crate::core::settings::connect_timeout(),
+            Duration::from_secs(9)
+        );
+        assert_eq!(
+            crate::core::settings::resume_interval(),
+            Duration::from_secs(10)
+        );
         assert!(!crate::core::settings::pex_enabled());
         assert!(!crate::core::settings::quic_enabled());
 
         // Restore runtime tuning defaults
         apply_runtime_settings(&ClientSettings::default());
-        let _ = rt.block_on(engine.shutdown_graceful());
+        rt.block_on(engine.shutdown_graceful());
     }
 }

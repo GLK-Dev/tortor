@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release version tag (defaults to Cargo.toml version)'
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  linux:
+    name: Build Linux x86_64 GUI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release
+      - name: Package Linux GUI
+        shell: bash
+        run: |
+          RAW_TAG="${{ inputs.tag || github.ref_name }}"
+          TAG="${RAW_TAG}"
+          if [[ "$TAG" != v* ]]; then TAG="v$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"; fi
+          PKG="tortor_${TAG}_linux_x86_64"
+          mkdir -p "dist/$PKG"
+          cp target/release/tortor "dist/$PKG/"
+          cp packaging/linux/tortor.desktop packaging/linux/install.sh Images/tortor_icon.png README.md LICENSE "dist/$PKG/"
+          chmod +x "dist/$PKG/tortor" "dist/$PKG/install.sh"
+          tar -C dist -czf "dist/${PKG}.tar.gz" "$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*.tar.gz
+
+  macos:
+    name: Build macOS Universal GUI (.app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release (arm64 + x86_64)
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Create Universal TorTor.app bundle
+        shell: bash
+        run: |
+          RAW_TAG="${{ inputs.tag || github.ref_name }}"
+          TAG="${RAW_TAG}"
+          if [[ "$TAG" != v* ]]; then TAG="v$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"; fi
+          VER="${TAG#v}"
+          mkdir -p dist/universal
+          lipo -create \
+            target/aarch64-apple-darwin/release/tortor \
+            target/x86_64-apple-darwin/release/tortor \
+            -output dist/universal/tortor
+          chmod +x packaging/macos/build_app.sh
+          ./packaging/macos/build_app.sh dist/universal/tortor dist/app "$VER"
+          ditto -c -k --sequesterRsrc --keepParent dist/app/TorTor.app "dist/tortor_${TAG}_macos_universal.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/*.zip
+
+  windows:
+    name: Build Windows x86_64 GUI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release
+      - name: Package Windows GUI
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          if (-not $tag.StartsWith("v")) { $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value; $tag = "v$ver" }
+          $dir = "dist/tortor_${tag}_windows_x86_64"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/tortor.exe, README.md, LICENSE, Images/tortor_icon.png $dir
+          Compress-Archive -Path "$dir\*" -DestinationPath "dist/tortor_${tag}_windows_x86_64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*.zip
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

@@ -1,4 +1,4 @@
-﻿// Copyright (c) Vitaly Golik (mjojo)
+// Copyright (c) Vitaly Golik (mjojo)
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -339,8 +339,9 @@ fn decode_compact_peers(peers_data: &[u8]) -> Result<Vec<PeerInfo>> {
         );
     }
 
-    Ok(peers_data
-        .chunks_exact(6)
+    let (chunks, _) = peers_data.as_chunks::<6>();
+    Ok(chunks
+        .iter()
         .map(|chunk| PeerInfo {
             addr: SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]),
@@ -358,8 +359,9 @@ fn decode_compact_peers6(peers_data: &[u8]) -> Result<Vec<PeerInfo>> {
         );
     }
 
-    Ok(peers_data
-        .chunks_exact(18)
+    let (chunks, _) = peers_data.as_chunks::<18>();
+    Ok(chunks
+        .iter()
         .map(|chunk| {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&chunk[..16]);
