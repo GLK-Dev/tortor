@@ -1,5 +1,19 @@
 # Changelog - TorTor
 
+## [1.8.0] - 2026-11-27
+
+### UI & Localization / Интерфейс и локализация
+- **Hey GUI rewrite:** replaced the `egui`/`eframe` interface with a custom Industrial Dark desktop interface built on the `Hey` UI framework (`hey-core`, `hey-draw`, `hey-layout`, `hey-style`, `hey-text`, `hey-widgets`, `hey-shell`, `hey-i18n`).
+- **New layout & inspector:** sidebar category/tag filters, toolbar search filter, torrent table with multi-state progress bars, and tabbed bottom inspector (General with piece availability map, Files, Peers, Trackers, Logs) plus live DHT node count and UPnP port status in the status bar.
+- **Multilingual UI (RU / EN):** restored full Russian and English localization using Fluent `.ftl` catalogs via `hey-i18n`, locale-aware size/speed/ETA formatting, and persisted `SessionStore::language`.
+- **System `TextScaleFactor` & window resizing:** custom widgets and layout metrics now scale proportionally via `theme.scale()` / `theme.space()`, and the main layout stretches across the entire OS window on resize.
+- **New branding:** updated app logo (`Images/tortor_icon.png`, `LOGO_SVG`) and rebuilt multi-resolution Windows `.ico` resource (`Images/tortor.ico`).
+
+### Fixes & Project / Исправления и проект
+- **Windows file locking:** completed downloads no longer remain locked by `tortor.exe` when idle/paused or when all files finish, and storage file handles are released cleanly.
+- **Deleted files on restart:** TorTor detects files deleted from disk before or across restarts and resets affected pieces/completion accurately instead of showing deleted files as completed.
+- **Clean shutdown:** closing the GUI window cleanly stops background torrent coordinators, DHT/network tasks, UPnP port mapping, and exits `tortor.exe`.
+- Bumped package version to `1.8.0` and peer id prefix to `-TT1800-`.
 ## [1.7.0] - 2026-10-04
 
 ### Features / Возможности

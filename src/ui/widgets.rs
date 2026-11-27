@@ -18,7 +18,8 @@ use super::theme::{
 };
 
 fn text_style(env: &Env, size_px: f32, max_width: Option<f32>, align: TextAlign) -> TextStyle {
-    let mut st = TextStyle::new(env.chain.clone(), size_px);
+    let scaled_px = (size_px * env.theme.scale()).max(1.0);
+    let mut st = TextStyle::new(env.chain.clone(), scaled_px);
     st.max_width = max_width;
     st.wrap = false;
     st.ellipsis = max_width.is_some();
@@ -41,6 +42,24 @@ fn draw_text(
     for run in l.to_runs(pos, color) {
         out.push(DrawCmd::Text(run));
     }
+}
+
+/// Invisible spacer whose size scales with `env.theme.scale()`.
+pub struct ScaledBox;
+
+impl ScaledBox {
+    pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, base_w: f32, base_h: f32) -> NodeId {
+        let w = if base_w > 0.0 { ui.env.theme.space(base_w) } else { 0.0 };
+        let h = if base_h > 0.0 { ui.env.theme.space(base_h) } else { 0.0 };
+        let mut st = Style::leaf().pass_through();
+        st.width = Dim::Px(w);
+        st.height = Dim::Px(h);
+        ui.add_widget(parent, st, ScaledBox, move |_| Size::new(w, h))
+    }
+}
+
+impl<Msg> Widget<Msg> for ScaledBox {
+    fn paint(&self, _env: &Env, _rect: Rect, _state: WidgetState, _out: &mut DisplayList) {}
 }
 
 /// Container with custom background color and optional 1px edges.
@@ -172,27 +191,31 @@ pub struct SidebarHeader;
 
 impl SidebarHeader {
     pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId) -> NodeId {
+        let h = ui.env.theme.space(56.0);
+        let w = ui.env.theme.space(196.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(56.0);
-        ui.add_widget(parent, st, SidebarHeader, |_| Size::new(180.0, 56.0))
+        st.height = Dim::Px(h);
+        ui.add_widget(parent, st, SidebarHeader, move |_| Size::new(w, h))
     }
 }
 
 impl<Msg> Widget<Msg> for SidebarHeader {
     fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
         ensure_icons(env);
-        let icon_px = 28u32;
+        let icon_px = env.theme.space(28.0).max(16.0) as u32;
+        let pad_x = env.theme.space(16.0);
+        let text_x = env.theme.space(54.0);
         if let Some(image) = env.icons.borrow_mut().get("tortor_logo", icon_px, None) {
             let y = rect.y + (rect.h - icon_px as f32) / 2.0;
             out.push(DrawCmd::Image {
-                rect: Rect::new(rect.x + 16.0, y, icon_px as f32, icon_px as f32),
+                rect: Rect::new(rect.x + pad_x, y, icon_px as f32, icon_px as f32),
                 image,
             });
         }
         let st = text_style(env, 17.0, None, TextAlign::Left);
         let l = layout(&env.fonts, "Tortor", &st);
         let ty = rect.y + (rect.h - l.height) / 2.0;
-        for run in l.to_runs(Point::new(rect.x + 54.0, ty), TEXT) {
+        for run in l.to_runs(Point::new(rect.x + text_x, ty), TEXT) {
             out.push(DrawCmd::Text(run));
         }
     }
@@ -206,8 +229,10 @@ pub struct SectionLabel {
 
 impl SectionLabel {
     pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, text: &str, pad_x: f32) -> NodeId {
+        let h = ui.env.theme.space(22.0);
+        let w = ui.env.theme.space(196.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(22.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -215,17 +240,18 @@ impl SectionLabel {
                 text: text.to_string(),
                 pad_x,
             },
-            |_| Size::new(140.0, 22.0),
+            move |_| Size::new(w, h),
         )
     }
 }
 
 impl<Msg> Widget<Msg> for SectionLabel {
     fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
-        let st = text_style(env, 10.5, Some(rect.w - self.pad_x * 2.0), TextAlign::Left);
+        let pad_x = env.theme.space(self.pad_x);
+        let st = text_style(env, 10.5, Some((rect.w - pad_x * 2.0).max(20.0)), TextAlign::Left);
         let l = layout(&env.fonts, &self.text, &st);
         let ty = rect.y + (rect.h - l.height) / 2.0;
-        for run in l.to_runs(Point::new(rect.x + self.pad_x, ty), TEXT_DIM) {
+        for run in l.to_runs(Point::new(rect.x + pad_x, ty), TEXT_DIM) {
             out.push(DrawCmd::Text(run));
         }
     }
@@ -248,8 +274,10 @@ impl<Msg: 'static> SidebarItem<Msg> {
         active: bool,
         on_click: Callback<Msg, ()>,
     ) -> NodeId {
+        let h = ui.env.theme.space(30.0);
+        let w = ui.env.theme.space(196.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(30.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -259,7 +287,7 @@ impl<Msg: 'static> SidebarItem<Msg> {
                 active,
                 on_click,
             },
-            |_| Size::new(180.0, 30.0),
+            move |_| Size::new(w, h),
         )
     }
 }
@@ -282,11 +310,13 @@ impl<Msg: 'static> Widget<Msg> for SidebarItem<Msg> {
             out.push(DrawCmd::fill(rect, ROW_HOVER));
         }
 
+        let pad_x = env.theme.space(16.0);
+        let right_reserve = env.theme.space(58.0);
         let fg = if self.active { TEXT } else { TEXT_MUTED };
-        let st = text_style(env, 13.0, Some((rect.w - 58.0).max(20.0)), TextAlign::Left);
+        let st = text_style(env, 13.0, Some((rect.w - right_reserve).max(20.0)), TextAlign::Left);
         let l = layout(&env.fonts, &self.label, &st);
         let ty = rect.y + (rect.h - l.height) / 2.0;
-        for run in l.to_runs(Point::new(rect.x + 16.0, ty), fg) {
+        for run in l.to_runs(Point::new(rect.x + pad_x, ty), fg) {
             out.push(DrawCmd::Text(run));
         }
 
@@ -294,7 +324,7 @@ impl<Msg: 'static> Widget<Msg> for SidebarItem<Msg> {
             let rst = text_style(env, 12.0, None, TextAlign::Right);
             let rl = layout(&env.fonts, &self.right_text, &rst);
             let ry = rect.y + (rect.h - rl.height) / 2.0;
-            for run in rl.to_runs(Point::new(rect.right() - 16.0 - rl.width, ry), TEXT_DIM) {
+            for run in rl.to_runs(Point::new(rect.right() - pad_x - rl.width, ry), TEXT_DIM) {
                 out.push(DrawCmd::Text(run));
             }
         }
@@ -577,7 +607,7 @@ impl<Msg: 'static> Widget<Msg> for FilterInput<Msg> {
             self.edit.select_all();
             return;
         }
-        let rel = pos.x - (rect.x + 32.0) + self.scroll.get();
+        let rel = pos.x - (rect.x + env.theme.space(32.0)) + self.scroll.get();
         let t = self.edit.text();
         let mut best = (0usize, f32::MAX);
         for i in t.char_indices().map(|(i, _)| i).chain(std::iter::once(t.len())) {
@@ -649,21 +679,22 @@ struct TableCols {
     eta_w: f32,
 }
 
-fn table_cols(rect: Rect) -> TableCols {
-    let pad = 18.0;
-    let size_w = 78.0;
-    let prog_w = 172.0;
-    let down_w = 88.0;
-    let up_w = 88.0;
-    let eta_w = 78.0;
+fn table_cols(env: &Env, rect: Rect) -> TableCols {
+    let sp = |px: f32| env.theme.space(px);
+    let pad = sp(16.0);
+    let size_w = sp(70.0);
+    let prog_w = sp(142.0);
+    let down_w = sp(78.0);
+    let up_w = sp(78.0);
+    let eta_w = sp(64.0);
     let right = rect.right() - pad;
     let eta_x = right - eta_w;
-    let up_x = eta_x - 8.0 - up_w;
-    let down_x = up_x - 8.0 - down_w;
-    let prog_x = down_x - 16.0 - prog_w;
-    let size_x = prog_x - 14.0 - size_w;
+    let up_x = eta_x - sp(8.0) - up_w;
+    let down_x = up_x - sp(8.0) - down_w;
+    let prog_x = down_x - sp(14.0) - prog_w;
+    let size_x = prog_x - sp(12.0) - size_w;
     let name_x = rect.x + pad;
-    let name_w = (size_x - 14.0 - name_x).max(80.0);
+    let name_w = (size_x - sp(12.0) - name_x).max(sp(80.0));
     TableCols {
         name_x,
         name_w,
@@ -701,7 +732,7 @@ impl<Msg> Widget<Msg> for TableHeader {
             width: 1.0,
             color: LINE,
         });
-        let c = table_cols(rect);
+        let c = table_cols(env, rect);
         let draw_col = |label: &str, x: f32, w: f32, align: TextAlign, out: &mut DisplayList| {
             let st = text_style(env, 10.5, Some(w), align);
             let l = layout(&env.fonts, label, &st);
@@ -785,7 +816,7 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
             color: ROW_DIVIDER,
         });
 
-        let c = table_cols(rect);
+        let c = table_cols(env, rect);
         let status_color = match self.props.status_kind {
             1 => GREEN,
             2 => CYAN,
@@ -889,7 +920,8 @@ impl<Msg: 'static> InspectorTabs<Msg> {
     }
 
     fn tab_spans(&self, env: &Env, rect: Rect) -> Vec<(f32, f32)> {
-        let mut x = rect.x + 18.0;
+        let pad = env.theme.space(18.0);
+        let mut x = rect.x + pad;
         let mut spans = Vec::with_capacity(self.labels.len());
         for label in &self.labels {
             let l = layout(&env.fonts, label, &text_style(env, 12.5, None, TextAlign::Left));
@@ -1119,7 +1151,8 @@ impl<Msg: 'static> Widget<Msg> for StatusBarWidget<Msg> {
         CursorIcon::Pointer
     }
     fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
-        let mut x = rect.x + 18.0;
+        let pad = env.theme.space(18.0);
+        let mut x = rect.x + pad;
         let mut push_seg = |txt: &str, col: Color, out: &mut DisplayList| {
             let st = text_style(env, 12.0, None, TextAlign::Left);
             let l = layout(&env.fonts, txt, &st);
@@ -1139,7 +1172,7 @@ impl<Msg: 'static> Widget<Msg> for StatusBarWidget<Msg> {
         let rst = text_style(env, 12.0, None, TextAlign::Right);
         let rl = layout(&env.fonts, &self.right_text, &rst);
         let ry = rect.y + (rect.h - rl.height) / 2.0;
-        for run in rl.to_runs(Point::new(rect.right() - 18.0 - rl.width, ry), TEXT_MUTED) {
+        for run in rl.to_runs(Point::new(rect.right() - pad - rl.width, ry), TEXT_MUTED) {
             out.push(DrawCmd::Text(run));
         }
     }

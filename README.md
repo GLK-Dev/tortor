@@ -10,7 +10,7 @@
 
 ## English
 
-TorTor is a BitTorrent client written in Rust with a desktop GUI ([egui](https://github.com/emilk/egui)). It runs on Windows and Linux, downloads and seeds several torrents at once, and speaks TCP and IPv6 out of the box.
+TorTor is a BitTorrent client written in Rust with a desktop GUI powered by [Hey](https://github.com/GLK-Dev/Hey). It runs on Windows and Linux, downloads and seeds several torrents at once, and speaks TCP and IPv6 out of the box.
 
 ### Features
 
@@ -20,7 +20,9 @@ TorTor is a BitTorrent client written in Rust with a desktop GUI ([egui](https:/
 - **Finding peers:** HTTP and UDP trackers (multiple trackers via `announce-list`, IPv6 peers), Kademlia DHT (BEP 5, incl. IPv6 per BEP 32; the node answers queries and announces itself), peer exchange (BEP 11).
 - **Uploading:** the client seeds while and after downloading and accepts inbound connections on one port for TCP and QUIC, IPv4 and IPv6. UPnP port forwarding is attempted automatically.
 - **Piece picking:** rarest-first with endgame mode; every piece is checked against its SHA-1 hash before it is written.
-- **Speed limits** for download and upload (top bar of the window, saved between runs).
+- **Speed limits** for download and upload (configurable from the sidebar or status bar, saved between runs).
+- **Multilingual UI (RU / EN)** powered by `hey-i18n` with persisted language selection and system `TextScaleFactor` scaling.
+- **Visual inspector:** piece availability map, per-file progress and selection checkboxes, live peers, trackers, and logs.
 - **Crash-safe state:** resume data and the session list are written atomically; progress is recorded only after the data was flushed to disk. Existing files are re-checked when a torrent is added.
 - **Hardened parsing:** limits on message sizes and nesting depth, sanitized file paths (no path traversal), validated torrent metadata.
 - **Optional QUIC transport** between TorTor clients (TLS 1.3). Other clients are reached over plain TCP.
@@ -59,7 +61,7 @@ tortor [OPTIONS] [MAGNET]
                               or only listen (--listen-port); does not download
 ```
 
-In the window, use **+ Add Torrent** or paste a link into the **URL/Magnet** field, choose a directory and press **Start Swarm**. The top bar shows the speed limits (KiB/s, `0` = unlimited) and the port/UPnP status.
+In the window, use **+ Add**, choose a `.torrent` file or paste a magnet link, select a tag and download directory, then confirm. Use the sidebar to filter by state or tag, inspect pieces/files/peers in the bottom tabs, click the **RU/EN** button to switch language, and click the status bar limits to configure KiB/s limits (`0` = unlimited).
 
 Open the port (TCP and UDP, default 6881) in your firewall/router if UPnP is unavailable; without it TorTor still downloads but cannot accept incoming connections.
 
@@ -92,7 +94,7 @@ Dual-licensed under MIT or Apache-2.0, see [LICENSE](LICENSE).
 <a id="русский"></a>
 ## Русский
 
-TorTor — BitTorrent-клиент на Rust с графическим интерфейсом ([egui](https://github.com/emilk/egui)). Работает в Windows и Linux, качает и раздаёт несколько торрентов одновременно, поддерживает IPv6.
+TorTor — BitTorrent-клиент на Rust с графическим интерфейсом на базе [Hey](https://github.com/GLK-Dev/Hey). Работает в Windows и Linux, качает и раздаёт несколько торрентов одновременно, поддерживает IPv6.
 
 ### Возможности
 
@@ -102,7 +104,9 @@ TorTor — BitTorrent-клиент на Rust с графическим инте�
 - **Поиск пиров:** HTTP- и UDP-трекеры (несколько трекеров через `announce-list`, IPv6-пиры), DHT Kademlia (BEP 5, IPv6 по BEP 32; узел отвечает на запросы и объявляет себя), обмен пирами (BEP 11).
 - **Раздача:** клиент раздаёт во время загрузки и после неё и принимает входящие соединения на одном порту для TCP и QUIC, IPv4 и IPv6. Проброс порта через UPnP включается автоматически.
 - **Выбор кусков:** сначала самые редкие, режим endgame; каждый кусок проверяется по SHA-1 до записи.
-- **Ограничение скорости** загрузки и раздачи (верхняя панель окна, сохраняется между запусками).
+- **Ограничение скорости** загрузки и раздачи (настраивается из боковой панели или строки состояния, сохраняется между запусками).
+- **Двуязычный интерфейс (RU / EN)** на базе `hey-i18n` с сохранением выбранного языка и поддержкой системного масштаба текста `TextScaleFactor`.
+- **Инспектор торрента:** карта частей, выбор файлов с чекбоксами, список пиров, трекеры и журнал событий.
 - **Устойчивое состояние:** данные возобновления и список сессий пишутся атомарно; прогресс фиксируется только после сброса данных на диск. При добавлении торрента существующие файлы перепроверяются.
 - **Защищённый разбор:** лимиты на размер сообщений и вложенность, очистка путей файлов (нет выхода за каталог загрузки), проверка метаданных торрента.
 - **Необязательный транспорт QUIC** между клиентами TorTor (TLS 1.3). С остальными клиентами связь идёт по обычному TCP.

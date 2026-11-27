@@ -31,7 +31,7 @@ use super::theme::{
     TEXT_DIM, TEXT_MUTED, WINDOW_BG,
 };
 use super::widgets::{
-    ActionButton, FilterInput, InspectorTabs, ModalBackdrop, PieceMapBar, SectionLabel,
+    ActionButton, FilterInput, InspectorTabs, ModalBackdrop, PieceMapBar, ScaledBox, SectionLabel,
     SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader, TorrentRow,
     TorrentRowProps,
 };
@@ -727,11 +727,7 @@ fn view_sidebar(m: &Model) -> View<Msg> {
         ));
     }
 
-    items.push(View::container(
-        "sb_tags_gap",
-        Style::column().height(14.0),
-        vec![],
-    ));
+    items.push(View::leaf("sb_tags_gap", (), |ui, p| ScaledBox::add(ui, p, 0.0, 14.0)));
     let tags_hdr = m.i18n.tr("sec-tags");
     items.push(View::leaf("sb_tags_hdr", tags_hdr.clone(), move |ui, p| {
         SectionLabel::add(ui, p, &tags_hdr, 16.0)
@@ -797,15 +793,11 @@ fn view_sidebar(m: &Model) -> View<Msg> {
             )
         },
     ));
-    items.push(View::container(
-        "sb_bottom_pad",
-        Style::column().height(8.0),
-        vec![],
-    ));
+    items.push(View::leaf("sb_bottom_pad", (), |ui, p| ScaledBox::add(ui, p, 0.0, 8.0)));
 
     Surface::container(
         "sidebar_wrap",
-        Style::column().width(210.0),
+        Style::column(),
         Style::column(),
         Surface {
             fill: SIDEBAR_BG,
@@ -1419,9 +1411,11 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
         }
     };
 
+    let mut dialog_children = dialog_children;
+    dialog_children.insert(0, View::leaf("modal_min_w", (), |ui, p| ScaledBox::add(ui, p, 460.0, 0.0)));
     let card = Surface::container(
         "modal_card",
-        Style::column().width(500.0),
+        Style::column(),
         Style::column().padding(Insets::all(20.0)).gap(12.0),
         Surface {
             fill: INSPECTOR_BG,
@@ -1449,7 +1443,7 @@ fn view(m: &Model) -> Vec<View<Msg>> {
     let q = m.filter_text.clone();
     let toolbar = Surface::container(
         "toolbar",
-        Style::column().height(54.0),
+        Style::column(),
         Style::row()
             .padding(Insets::symmetric(18.0, 10.0))
             .gap(8.0)
@@ -1607,7 +1601,7 @@ fn view(m: &Model) -> Vec<View<Msg>> {
     let insp_children = view_inspector_body(m);
     let inspector = Surface::container(
         "inspector_panel",
-        Style::column().height(178.0),
+        Style::column(),
         Style::column(),
         Surface {
             fill: INSPECTOR_BG,
@@ -1632,13 +1626,21 @@ fn view(m: &Model) -> Vec<View<Msg>> {
                 },
             ),
             View::container(
-                "insp_body",
-                Style::column()
-                    .grow(1.0)
-                    .padding(Insets::symmetric(18.0, 10.0))
-                    .gap(8.0)
-                    .scroll(false, true),
-                insp_children,
+                "insp_body_row",
+                Style::row(),
+                vec![
+                    View::leaf("insp_h_strut", (), |ui, p| ScaledBox::add(ui, p, 0.0, 144.0)),
+                    View::container(
+                        "insp_body",
+                        Style::column()
+                            .grow(1.0)
+                            .shrink(1.0)
+                            .padding(Insets::symmetric(18.0, 10.0))
+                            .gap(8.0)
+                            .scroll(false, true),
+                        insp_children,
+                    ),
+                ],
             ),
         ],
     );
@@ -1677,7 +1679,7 @@ fn view(m: &Model) -> Vec<View<Msg>> {
 
     let status_bar = Surface::container(
         "status_bar_wrap",
-        Style::column().height(32.0),
+        Style::column(),
         Style::column(),
         Surface {
             fill: STATUSBAR_BG,
@@ -1825,7 +1827,7 @@ pub fn run_dashboard(
         .theme(tortor_theme())
         .window(WindowConfig {
             title: "TorTor Download Manager".to_string(),
-            size: (1180.0, 740.0),
+            size: (1280.0, 780.0),
             clear: WINDOW_BG,
             vsync: true,
         })
