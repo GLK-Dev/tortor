@@ -251,6 +251,44 @@ impl TorrentManager {
         self.wanted_completed == self.wanted_total
     }
 
+    /// Summarizes piece states into `bucket_count` bars for UI piece maps:
+    /// `0` = missing, `1` = active/partial, `2` = completed.
+    pub fn piece_map_buckets(&self, bucket_count: usize) -> Vec<u8> {
+        let total = self.total_pieces as usize;
+        if total == 0 || bucket_count == 0 {
+            return Vec::new();
+        }
+        let n = bucket_count.min(total);
+        let mut out = Vec::with_capacity(n);
+        for b in 0..n {
+            let start = (b * total) / n;
+            let end = (((b + 1) * total) / n).max(start + 1).min(total);
+            let mut any_active = false;
+            let mut any_done = false;
+            let mut all_done = true;
+            for idx in start..end {
+                let p = idx as u32;
+                if self.in_progress.contains_key(&p) {
+                    any_active = true;
+                    all_done = false;
+                } else if self.completed.contains(&p) {
+                    any_done = true;
+                } else {
+                    all_done = false;
+                }
+            }
+            let code = if any_active {
+                1
+            } else if all_done || any_done {
+                2
+            } else {
+                0
+            };
+            out.push(code);
+        }
+        out
+    }
+
     pub fn completed_count(&self) -> usize {
         self.completed.len()
     }

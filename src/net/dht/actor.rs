@@ -6,7 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use sha1::{Digest, Sha1};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, info};
 
 use crate::net::dht::krpc::{KrpcMessage, QueryArgs, ResponseArgs};
@@ -136,6 +136,7 @@ pub struct DhtManager {
     peer_store: PeerStore,
     tokens: Tokens,
     port: u16,
+    node_count: watch::Sender<usize>,
 }
 
 /// Placeholder id for bootstrap routers, whose real id is not known yet.
@@ -197,6 +198,7 @@ impl DhtManager {
         }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(100);
+        let (node_count, _) = watch::channel(routing_table.len());
 
         let manager = Self {
             local_id,
@@ -208,12 +210,17 @@ impl DhtManager {
             peer_store: PeerStore::default(),
             tokens: Tokens::new(),
             port: bound_port,
+            node_count,
         };
 
         Ok((manager, cmd_tx))
     }
 
     /// The UDP port the DHT socket is bound to.
+    pub fn node_count_rx(&self) -> watch::Receiver<usize> {
+        self.node_count.subscribe()
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -240,6 +247,7 @@ impl DhtManager {
                     }
                     Some(DhtManagerCommand::InsertNode(contact)) => {
                         self.routing_table.insert(contact);
+                        let _ = self.node_count.send(self.routing_table.len());
                     }
                     Some(DhtManagerCommand::Shutdown) => {
                         let _ = self.server_cmd_tx.send(DhtCommand::Shutdown).await;
@@ -262,6 +270,7 @@ impl DhtManager {
                 _ = maintenance.tick() => {
                     self.tokens.rotate_if_due();
                     self.peer_store.purge();
+                    let _ = self.node_count.send(self.routing_table.len());
                 }
             }
         }

@@ -50,6 +50,7 @@ pub struct Engine {
     pub ipv6: bool,
     pub quic_endpoint: Arc<quinn::Endpoint>,
     pub dht: Option<mpsc::Sender<DhtManagerCommand>>,
+    pub dht_nodes: watch::Receiver<usize>,
     /// State of the UPnP port forwarding.
     pub port_map: watch::Receiver<PortMapStatus>,
     portmap_task: Mutex<Option<JoinHandle<()>>>,
@@ -151,10 +152,11 @@ impl Engine {
             if ipv6 { "IPv4 + IPv6" } else { "IPv4 only" }
         );
 
-        let dht = if options.enable_dht {
+        let (dht, dht_nodes) = if options.enable_dht {
             start_dht(port).await
         } else {
-            None
+            let (_tx, rx) = watch::channel(0);
+            (None, rx)
         };
 
         let (shutdown_tx, _) = broadcast::channel(4);
@@ -177,6 +179,7 @@ impl Engine {
             ipv6,
             quic_endpoint: Arc::new(quic),
             dht,
+            dht_nodes,
             port_map,
             portmap_task: Mutex::new(portmap_task),
             torrents: RwLock::new(HashMap::new()),
@@ -229,17 +232,19 @@ impl Engine {
 }
 
 /// The DHT uses the port after the peer port; falls back to any free port.
-async fn start_dht(peer_port: u16) -> Option<mpsc::Sender<DhtManagerCommand>> {
+async fn start_dht(peer_port: u16) -> (Option<mpsc::Sender<DhtManagerCommand>>, watch::Receiver<usize>) {
     for port in [peer_port.saturating_add(1), 0] {
         match DhtManager::new(port).await {
             Ok((manager, cmd_tx)) => {
+                let nodes = manager.node_count_rx();
                 tokio::spawn(manager.run());
-                return Some(cmd_tx);
+                return (Some(cmd_tx), nodes);
             }
             Err(err) => warn!("DHT could not bind port {port}: {err}"),
         }
     }
-    None
+    let (_tx, rx) = watch::channel(0);
+    (None, rx)
 }
 
 fn spawn_tcp_acceptor(engine: Arc<Engine>, listener: TcpListener, limit: Arc<Semaphore>) {

@@ -22,6 +22,9 @@ pub struct SessionEntry {
     /// Which files of a multi-file torrent are downloaded; `None` means all.
     #[serde(default)]
     pub selected_files: Option<Vec<bool>>,
+    /// Optional user tag (`Система`, `Видео`, `Данные`).
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -32,6 +35,9 @@ pub struct SessionStore {
     pub download_limit_kib: u64,
     #[serde(default)]
     pub upload_limit_kib: u64,
+    /// UI language tag (ru or en).
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl SessionStore {
@@ -86,9 +92,11 @@ mod tests {
                 output_dir: PathBuf::from("downloads"),
                 is_paused: true,
                 selected_files: Some(vec![true, false]),
+                tag: None,
             }],
             download_limit_kib: 512,
             upload_limit_kib: 64,
+            language: Some("ru".into()),
         };
         store.save(&path).unwrap();
         let loaded = SessionStore::load(&path).unwrap();

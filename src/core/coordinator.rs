@@ -103,6 +103,17 @@ impl AsyncDiskIO for DummyDisk {
     }
 }
 
+const PIECE_MAP_BUCKETS: usize = 72;
+
+async fn send_piece_map(ui_sender: &mpsc::Sender<CoreMessage>, manager: &TorrentManager) {
+    let _ = ui_sender
+        .send(CoreMessage::PieceMap {
+            completed: manager.completed_count() as u32,
+            total: manager.total_pieces,
+            buckets: manager.piece_map_buckets(PIECE_MAP_BUCKETS),
+        })
+        .await;
+}
 pub async fn run_coordinator(
     mut receiver: mpsc::Receiver<CoordinatorMsg>,
     ui_sender: mpsc::Sender<CoreMessage>,
@@ -120,6 +131,7 @@ pub async fn run_coordinator(
         ..
     } = &mut state
     {
+        send_piece_map(&ui_sender, manager).await;
         if manager.completed_count() > 0 {
             let _ = ui_sender
                 .send(CoreMessage::GlobalProgress(manager.progress()))
@@ -184,6 +196,7 @@ pub async fn run_coordinator(
                             let pct = (*next_piece as f32 / total_pieces as f32) * 100.0;
                             let _ = ui_sender.send(CoreMessage::Status(format!("Checking files: {:.1}%", pct))).await;
                             let _ = ui_sender.send(CoreMessage::GlobalProgress(manager.progress())).await;
+                            send_piece_map(&ui_sender, manager).await;
                         }
 
                         if *next_piece >= total_pieces {
@@ -203,6 +216,7 @@ pub async fn run_coordinator(
                         let _ = disk_writer.release_handles().await;
                         let has_completed = manager.is_done();
                         let _ = ui_sender.send(CoreMessage::GlobalProgress(manager.progress())).await;
+                        send_piece_map(&ui_sender, &manager).await;
                         if has_completed {
                             info!("torrent download complete (from local files), entering seeding mode");
                             let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
@@ -231,7 +245,11 @@ pub async fn run_coordinator(
                         let _ = reply.send(None);
                     } else {
                         let work = manager.next_work_for(&have);
+                        let assigned = work.is_some();
                         let _ = reply.send(work);
+                        if assigned {
+                            send_piece_map(&ui_sender, manager).await;
+                        }
                     }
                 } else {
                     let _ = reply.send(None);
@@ -277,6 +295,7 @@ pub async fn run_coordinator(
                     }
                     let progress = manager.progress();
                     let _ = ui_sender.send(CoreMessage::GlobalProgress(progress)).await;
+                    send_piece_map(&ui_sender, manager).await;
 
                     if manager.is_done() || last_persist.elapsed() >= RESUME_PERSIST_INTERVAL {
                         // Progress may only be recorded once the data is on disk.
@@ -301,6 +320,7 @@ pub async fn run_coordinator(
             CoordinatorMsg::PieceFailed(index) => {
                 if let CoordinatorState::DownloadingData { manager, .. } = &mut state {
                     manager.return_work(index);
+                    send_piece_map(&ui_sender, manager).await;
                 }
             }
             CoordinatorMsg::GetCompletedPieces(reply) => {
@@ -489,6 +509,7 @@ pub async fn run_coordinator(
                 let _ = ui_sender
                     .send(CoreMessage::GlobalProgress(manager.progress()))
                     .await;
+                send_piece_map(&ui_sender, manager).await;
                 let _ = ui_sender
                     .send(CoreMessage::Status("File selection updated".to_string()))
                     .await;

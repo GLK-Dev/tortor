@@ -33,6 +33,12 @@ pub enum CoreMessage {
     MetadataReady(std::sync::Arc<crate::core::torrent::TorrentMeta>),
     TorrentLoaded(TorrentMeta),
     GlobalProgress(f32),
+    PieceMap {
+        completed: u32,
+        total: u32,
+        /// Bucketed piece states: 0 = missing, 1 = downloading/partial, 2 = completed.
+        buckets: Vec<u8>,
+    },
     DownloadComplete,
     ShutdownComplete,
     PeerFound(SocketAddr),

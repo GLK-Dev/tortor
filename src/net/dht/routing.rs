@@ -154,6 +154,14 @@ impl RoutingTable {
     }
 
     /// Up to `count` known contacts closest to `target` by XOR distance.
+    pub fn len(&self) -> usize {
+        self.buckets.iter().map(|b| b.nodes.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.iter().all(|b| b.nodes.is_empty())
+    }
+
     pub fn closest(&self, target: &NodeId, count: usize) -> Vec<Contact> {
         self.closest_where(target, count, |_| true)
     }
