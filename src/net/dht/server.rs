@@ -61,6 +61,7 @@ pub enum DhtCommand {
         target: SocketAddr,
         msg: KrpcMessage,
     },
+    Shutdown,
 }
 
 struct Pending {
@@ -168,6 +169,10 @@ impl DhtServer {
                             if let Ok(payload) = serde_bencode::to_bytes(&msg) {
                                 let _ = self.socket.send_to(&payload, self.wire_addr(canonical(target))).await;
                             }
+                        }
+                        Some(DhtCommand::Shutdown) => {
+                            info!("DHT server received shutdown signal.");
+                            break;
                         }
                         None => {
                             info!("DHT server command channel closed, shutting down.");

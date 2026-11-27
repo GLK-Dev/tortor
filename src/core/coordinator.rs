@@ -113,6 +113,26 @@ pub async fn run_coordinator(
 ) {
     info!("Coordinator task started");
 
+    if let CoordinatorState::DownloadingData {
+        manager,
+        disk_writer,
+        has_completed,
+        ..
+    } = &mut state
+    {
+        if manager.completed_count() > 0 {
+            let _ = ui_sender
+                .send(CoreMessage::GlobalProgress(manager.progress()))
+                .await;
+        }
+        if manager.is_done() && !*has_completed {
+            *has_completed = true;
+            let _ = disk_writer.release_handles().await;
+            let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
+            let _ = announce_tx.send(crate::core::command::SessionEvent::DownloadComplete);
+        }
+    }
+
     let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(1));
     let mut last_persist = tokio::time::Instant::now();
 
@@ -179,8 +199,10 @@ pub async fn run_coordinator(
                         paused: false,
                         has_completed: false,
                     };
-                    if let CoordinatorState::CheckingFiles { manager, disk_writer, .. } = std::mem::replace(&mut state, dummy_state) {
+                    if let CoordinatorState::CheckingFiles { manager, mut disk_writer, .. } = std::mem::replace(&mut state, dummy_state) {
+                        let _ = disk_writer.release_handles().await;
                         let has_completed = manager.is_done();
+                        let _ = ui_sender.send(CoreMessage::GlobalProgress(manager.progress())).await;
                         if has_completed {
                             info!("torrent download complete (from local files), entering seeding mode");
                             let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
@@ -268,6 +290,7 @@ pub async fn run_coordinator(
 
                     if manager.is_done() && !*has_completed {
                         info!("torrent download complete, entering seeding mode");
+                        let _ = disk_writer.release_handles().await;
                         let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
                         let _ =
                             announce_tx.send(crate::core::command::SessionEvent::DownloadComplete);
@@ -485,6 +508,7 @@ pub async fn run_coordinator(
 
                     let done = manager.is_done();
                     if done && !*has_completed {
+                        let _ = disk_writer.release_handles().await;
                         let _ = ui_sender.send(CoreMessage::DownloadComplete).await;
                         let _ =
                             announce_tx.send(crate::core::command::SessionEvent::DownloadComplete);
@@ -496,8 +520,14 @@ pub async fn run_coordinator(
                 }
             }
             CoordinatorMsg::Pause => {
-                if let CoordinatorState::DownloadingData { paused, .. } = &mut state {
+                if let CoordinatorState::DownloadingData {
+                    paused,
+                    disk_writer,
+                    ..
+                } = &mut state
+                {
                     *paused = true;
+                    let _ = disk_writer.release_handles().await;
                     let _ = ui_sender.send(CoreMessage::PausedState(true)).await;
                 }
             }
@@ -521,6 +551,7 @@ pub async fn run_coordinator(
         } else if let Err(err) = persist_resume(&resume_path, manager).await {
             error!("failed to persist final fastresume: {}", err);
         }
+        let _ = disk_writer.release_handles().await;
     }
 
     info!("Coordinator task stopped");

@@ -172,9 +172,12 @@ async fn discover_and_maintain(
         timeout: Some(Duration::from_secs(5)),
         ..Default::default()
     };
-    let gateway = igd_next::aio::tokio::search_gateway(options)
-        .await
-        .map_err(|e| format!("no UPnP gateway found ({e})"))?;
+    let gateway = tokio::select! {
+        _ = shutdown.recv() => return Ok(()),
+        res = igd_next::aio::tokio::search_gateway(options) => {
+            res.map_err(|e| format!("no UPnP gateway found ({e})"))?
+        }
+    };
 
     // The local address that routes towards the gateway is the one to forward to.
     let probe = tokio::net::UdpSocket::bind("0.0.0.0:0")

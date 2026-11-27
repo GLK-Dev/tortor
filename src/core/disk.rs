@@ -1,6 +1,7 @@
 // Copyright (c) Vitaly Golik (mjojo)
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -41,17 +42,29 @@ pub(crate) fn plan_files(
     Ok(plans)
 }
 
+fn configure_share_mode(options: &mut std::fs::OpenOptions) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ (1) | FILE_SHARE_WRITE (2) | FILE_SHARE_DELETE (4)
+        // Allows users to rename, move, or delete files even while handles exist.
+        options.share_mode(0x7);
+    }
+    #[cfg(not(windows))]
+    let _ = options;
+}
+
 /// Creates the file (and its directories) and sets it to `length` bytes.
 pub(crate) fn open_preallocated(path: &Path, length: u64) -> Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    configure_share_mode(&mut options);
+
+    let file = options
         .open(path)
         .with_context(|| format!("failed to open file {}", path.display()))?;
 
@@ -62,6 +75,16 @@ pub(crate) fn open_preallocated(path: &Path, length: u64) -> Result<std::fs::Fil
     Ok(file)
 }
 
+/// Opens an existing file read-only without creating or resizing it.
+fn open_readonly(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    configure_share_mode(&mut options);
+    options
+        .open(path)
+        .with_context(|| format!("failed to open file {} for reading", path.display()))
+}
+
 /// `selected[i]` for file `i`; files beyond the slice count as selected.
 pub(crate) fn is_selected(selected: Option<&[bool]>, index: usize) -> bool {
     selected
@@ -70,9 +93,92 @@ pub(crate) fn is_selected(selected: Option<&[bool]>, index: usize) -> bool {
         .unwrap_or(true)
 }
 
+/// Filters `completed` pieces from fastresume against actual files on disk.
+///
+/// Any piece overlapping a selected non-zero file that is missing or has an
+/// unexpected byte length is removed. Returns `(valid_pieces, invalidated_any)`.
+pub fn filter_completed_against_disk(
+    base_dir: &Path,
+    name: &str,
+    total_size: u64,
+    piece_length: u32,
+    files_meta: Option<&Vec<TorrentFile>>,
+    selected: Option<&[bool]>,
+    completed: &[u32],
+) -> Result<(Vec<u32>, bool)> {
+    if completed.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+
+    let is_multi = files_meta.is_some();
+    let torrent_files = files_meta.cloned().unwrap_or_else(|| {
+        vec![TorrentFile {
+            length: total_size,
+            path: vec![name.to_string()],
+        }]
+    });
+    let plans = plan_files(base_dir, name, is_multi, &torrent_files)?;
+    let piece_len = (piece_length.max(1)) as u64;
+
+    let mut invalid_pieces: HashSet<u32> = HashSet::new();
+    for (index, plan) in plans.iter().enumerate() {
+        let expected_len = plan.end.saturating_sub(plan.start);
+        if expected_len == 0 || !is_selected(selected, index) {
+            continue;
+        }
+        let valid = match std::fs::metadata(&plan.path) {
+            Ok(meta) => meta.is_file() && meta.len() == expected_len,
+            Err(_) => false,
+        };
+        if !valid {
+            let first = (plan.start / piece_len) as u32;
+            let last = ((plan.end - 1) / piece_len) as u32;
+            for piece in first..=last {
+                invalid_pieces.insert(piece);
+            }
+        }
+    }
+
+    if invalid_pieces.is_empty() {
+        return Ok((completed.to_vec(), false));
+    }
+
+    let valid: Vec<u32> = completed
+        .iter()
+        .copied()
+        .filter(|piece| !invalid_pieces.contains(piece))
+        .collect();
+    let invalidated_any = valid.len() < completed.len();
+    Ok((valid, invalidated_any))
+}
+
+/// Returns `true` if at least one selected non-zero file already exists on disk.
+pub fn any_selected_file_exists(
+    base_dir: &Path,
+    name: &str,
+    total_size: u64,
+    files_meta: Option<&Vec<TorrentFile>>,
+    selected: Option<&[bool]>,
+) -> Result<bool> {
+    let is_multi = files_meta.is_some();
+    let torrent_files = files_meta.cloned().unwrap_or_else(|| {
+        vec![TorrentFile {
+            length: total_size,
+            path: vec![name.to_string()],
+        }]
+    });
+    let plans = plan_files(base_dir, name, is_multi, &torrent_files)?;
+    Ok(plans.iter().enumerate().any(|(index, plan)| {
+        let len = plan.end.saturating_sub(plan.start);
+        len > 0 && is_selected(selected, index) && plan.path.is_file()
+    }))
+}
+
 pub struct FileMapping {
     path: PathBuf,
-    /// `None` for files that are not downloaded: their bytes are discarded.
+    selected: bool,
+    /// Cached read/write handle while actively downloading; released when
+    /// completed, paused, or idle so external apps/users can freely use files.
     file: Option<File>,
     start_offset: u64,
     end_offset: u64,
@@ -106,6 +212,30 @@ impl StandardDisk {
         name: &str,
         selected: Option<&[bool]>,
     ) -> Result<Self> {
+        Self::init_with_options(
+            base_dir,
+            total_size,
+            piece_length,
+            files_meta,
+            name,
+            selected,
+            true,
+        )
+        .await
+    }
+
+    /// Initializes the disk mapping. When `create_files` is `false`, missing
+    /// files are not created until a piece is actually written to them, and
+    /// existing files are opened read-only on demand without holding locks.
+    pub async fn init_with_options(
+        base_dir: impl AsRef<Path>,
+        total_size: u64,
+        piece_length: u32,
+        files_meta: Option<&Vec<TorrentFile>>,
+        name: &str,
+        selected: Option<&[bool]>,
+        create_files: bool,
+    ) -> Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
         let name = name.to_string();
         let is_multi = files_meta.is_some();
@@ -118,17 +248,22 @@ impl StandardDisk {
         let selected: Option<Vec<bool>> = selected.map(<[bool]>::to_vec);
 
         let opened = tokio::task::spawn_blocking(
-            move || -> Result<Vec<(FilePlan, Option<std::fs::File>)>> {
-                std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
+            move || -> Result<Vec<(FilePlan, bool, Option<std::fs::File>)>> {
+                if create_files {
+                    std::fs::create_dir_all(&base_dir).context("failed to create base dir")?;
+                }
 
                 plan_files(&base_dir, &name, is_multi, &torrent_files)?
                     .into_iter()
                     .enumerate()
                     .map(|(index, plan)| {
-                        let file = is_selected(selected.as_deref(), index)
-                            .then(|| open_preallocated(&plan.path, plan.end - plan.start))
-                            .transpose()?;
-                        Ok((plan, file))
+                        let keep = is_selected(selected.as_deref(), index);
+                        let file = if keep && create_files {
+                            Some(open_preallocated(&plan.path, plan.end - plan.start)?)
+                        } else {
+                            None
+                        };
+                        Ok((plan, keep, file))
                     })
                     .collect()
             },
@@ -137,8 +272,9 @@ impl StandardDisk {
 
         let files = opened
             .into_iter()
-            .map(|(plan, file)| FileMapping {
+            .map(|(plan, keep, file)| FileMapping {
                 path: plan.path,
+                selected: keep,
                 file: file.map(File::from_std),
                 start_offset: plan.start,
                 end_offset: plan.end,
@@ -172,9 +308,18 @@ impl AsyncDiskIO for StandardDisk {
         Ok(())
     }
 
+    async fn release_handles(&mut self) -> Result<()> {
+        self.flush().await?;
+        for mapping in &mut self.files {
+            mapping.file.take();
+        }
+        Ok(())
+    }
+
     async fn set_selection(&mut self, selected: &[bool]) -> Result<()> {
         for (index, mapping) in self.files.iter_mut().enumerate() {
             let keep = is_selected(Some(selected), index);
+            mapping.selected = keep;
             match (keep, mapping.file.is_some()) {
                 (true, false) => {
                     let (path, length) = (
@@ -211,10 +356,20 @@ impl AsyncDiskIO for StandardDisk {
                 let available_in_file = mapping.end_offset - current_abs_offset;
                 let to_write = std::cmp::min(data.len() - written, available_in_file as usize);
 
-                if let Some(file) = mapping.file.as_mut() {
-                    file.seek(SeekFrom::Start(file_offset)).await?;
-                    file.write_all(&data[written..written + to_write]).await?;
-                    mapping.dirty = true;
+                if mapping.selected {
+                    if mapping.file.is_none() {
+                        let path = mapping.path.clone();
+                        let length = mapping.end_offset - mapping.start_offset;
+                        let opened =
+                            tokio::task::spawn_blocking(move || open_preallocated(&path, length))
+                                .await??;
+                        mapping.file = Some(File::from_std(opened));
+                    }
+                    if let Some(file) = mapping.file.as_mut() {
+                        file.seek(SeekFrom::Start(file_offset)).await?;
+                        file.write_all(&data[written..written + to_write]).await?;
+                        mapping.dirty = true;
+                    }
                 }
 
                 written += to_write;
@@ -242,9 +397,19 @@ impl AsyncDiskIO for StandardDisk {
                 let to_read = std::cmp::min((len as usize) - read, available_in_file as usize);
 
                 // Files that are not downloaded read as zeros.
-                if let Some(file) = mapping.file.as_mut() {
-                    file.seek(SeekFrom::Start(file_offset)).await?;
-                    file.read_exact(&mut buffer[read..read + to_read]).await?;
+                if mapping.selected {
+                    if let Some(file) = mapping.file.as_mut() {
+                        file.seek(SeekFrom::Start(file_offset)).await?;
+                        file.read_exact(&mut buffer[read..read + to_read]).await?;
+                    } else {
+                        // Open read-only just for this read so seeding/checking never locks files.
+                        let path = mapping.path.clone();
+                        let mut temp = File::from_std(
+                            tokio::task::spawn_blocking(move || open_readonly(&path)).await??,
+                        );
+                        temp.seek(SeekFrom::Start(file_offset)).await?;
+                        temp.read_exact(&mut buffer[read..read + to_read]).await?;
+                    }
                 }
 
                 read += to_read;
@@ -388,6 +553,65 @@ mod tests {
         );
         // The released file reads as zeros now.
         assert_eq!(disk.read_piece(0, 0, 10).await.unwrap(), [0u8; 10]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn release_handles_unlocks_files_and_allows_reads_or_deletion() {
+        let dir = temp("release");
+        let data: Vec<u8> = (0..32u8).collect();
+        let mut disk = StandardDisk::init_with_options(
+            &dir,
+            32,
+            16,
+            None,
+            "movie.bin",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!dir.join("movie.bin").exists());
+        disk.write_piece(0, data[0..16].to_vec()).await.unwrap();
+        disk.write_piece(1, data[16..32].to_vec()).await.unwrap();
+        disk.release_handles().await.unwrap();
+
+        // Reads still work on demand without leaving handles open.
+        assert_eq!(disk.read_piece(0, 0, 16).await.unwrap(), data[0..16]);
+
+        // External rename & deletion succeed immediately without killing the process.
+        let renamed = dir.join("movie-renamed.bin");
+        std::fs::rename(dir.join("movie.bin"), &renamed).unwrap();
+        assert!(disk.read_piece(0, 0, 16).await.is_err());
+        assert!(!dir.join("movie.bin").exists());
+        std::fs::remove_file(&renamed).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filter_completed_drops_pieces_of_deleted_or_resized_files() {
+        let dir = temp("validate");
+        std::fs::create_dir_all(dir.join("bundle")).unwrap();
+        std::fs::write(dir.join("bundle").join("a.bin"), vec![1u8; 15]).unwrap();
+        std::fs::write(dir.join("bundle").join("b.bin"), vec![2u8; 25]).unwrap();
+
+        let files = vec![file(15, &["a.bin"]), file(25, &["b.bin"])];
+        let (valid, changed) =
+            filter_completed_against_disk(&dir, "bundle", 40, 10, Some(&files), None, &[0, 1, 2, 3])
+                .unwrap();
+        assert_eq!(valid, vec![0, 1, 2, 3]);
+        assert!(!changed);
+
+        // Delete b.bin (covers pieces 1, 2, 3; piece 0 belongs only to a.bin).
+        std::fs::remove_file(dir.join("bundle").join("b.bin")).unwrap();
+        let (valid, changed) =
+            filter_completed_against_disk(&dir, "bundle", 40, 10, Some(&files), None, &[0, 1, 2, 3])
+                .unwrap();
+        assert_eq!(valid, vec![0]);
+        assert!(changed);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

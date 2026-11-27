@@ -37,6 +37,7 @@ pub enum DhtManagerCommand {
         peers_tx: mpsc::UnboundedSender<SwarmEvent>,
     },
     InsertNode(Contact),
+    Shutdown,
 }
 
 /// Peers other nodes announced to us, bounded in count and age.
@@ -239,6 +240,11 @@ impl DhtManager {
                     }
                     Some(DhtManagerCommand::InsertNode(contact)) => {
                         self.routing_table.insert(contact);
+                    }
+                    Some(DhtManagerCommand::Shutdown) => {
+                        let _ = self.server_cmd_tx.send(DhtCommand::Shutdown).await;
+                        info!("DhtManager received shutdown signal.");
+                        break;
                     }
                     None => {
                         info!("DhtManager command channel closed.");

@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use super::theme::{probe_storage_volume, tr, HeosLang, HeosPalette, HeosThemeId, StorageProbe};
 use eframe::egui::{self, Color32, RichText};
 use tokio::sync::{broadcast, mpsc as tokio_mpsc};
 use tokio::time::Duration;
@@ -121,6 +122,7 @@ fn file_picker(
     }
 }
 
+#[allow(dead_code)]
 fn ascii_progress_bar(progress: f32, width: usize) -> String {
     let p = progress.clamp(0.0, 1.0);
     let filled = (p * width as f32).round() as usize;
@@ -174,7 +176,12 @@ pub fn run_dashboard(
             // Resume saved sessions
             let entries = app.session_store.entries.clone();
             for entry in entries {
-                app.start_core(entry.source, entry.output_dir, entry.selected_files);
+                app.start_core(
+                    entry.source,
+                    entry.output_dir,
+                    entry.selected_files,
+                    entry.is_paused,
+                );
             }
 
             // Start CLI-provided torrent if any
@@ -183,6 +190,7 @@ pub fn run_dashboard(
                     crate::core::session_store::TorrentSource::File(path),
                     output_dir.clone(),
                     None,
+                    false,
                 );
             }
             if let Some(uri) = initial_magnet {
@@ -190,6 +198,7 @@ pub fn run_dashboard(
                     crate::core::session_store::TorrentSource::Magnet(uri),
                     output_dir,
                     None,
+                    false,
                 );
             }
             Ok(Box::new(app))
@@ -197,7 +206,13 @@ pub fn run_dashboard(
     )
     .map_err(|err| anyhow::anyhow!("failed to start GUI: {err}"))?;
 
-    runtime.block_on(engine.shutdown_graceful());
+    let _ = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), engine.shutdown_graceful()).await
+    });
+    drop(engine);
+    if let Ok(rt) = Arc::try_unwrap(runtime) {
+        rt.shutdown_timeout(Duration::from_secs(1));
+    }
     Ok(())
 }
 
@@ -240,7 +255,7 @@ fn initial_coordinator_state(
 fn background_task(
     session_id: usize,
     tx: mpsc::Sender<(usize, CoreMessage)>,
-    command_rx: Receiver<CoreCommand>,
+    mut command_rx: tokio_mpsc::UnboundedReceiver<CoreCommand>,
     torrent_source: TorrentSource,
     engine: Arc<Engine>,
     runtime: tokio::runtime::Handle,
@@ -300,9 +315,9 @@ fn background_task(
     ))
     .ok();
 
-    // Wait for the user to press "Start Swarm" or "StopAll"
+    // Wait for StartSwarm or StopAll
     let mut started = false;
-    while let Ok(command) = command_rx.recv() {
+    while let Some(command) = command_rx.blocking_recv() {
         match command {
             CoreCommand::StartSwarm => {
                 started = true;
@@ -340,27 +355,31 @@ fn background_task(
             use_dht: true,
             timeout: Duration::from_secs(300),
         };
-        let fetch = runtime.spawn(crate::net::metadata::fetch_metadata(options, move |text| {
+        let mut fetch = runtime.spawn(crate::net::metadata::fetch_metadata(options, move |text| {
             let _ = status_tx.send((session_id, CoreMessage::Status(text)));
         }));
 
-        loop {
-            if fetch.is_finished() {
-                break;
-            }
-            match command_rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(CoreCommand::StopAll) => {
-                    fetch.abort();
-                    tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
-                    return Ok(());
+        let fetched_res = runtime.block_on(async {
+            loop {
+                tokio::select! {
+                    res = &mut fetch => break Some(res),
+                    cmd = command_rx.recv() => match cmd {
+                        Some(CoreCommand::StopAll) | None => {
+                            fetch.abort();
+                            break None;
+                        }
+                        Some(_) => {}
+                    }
                 }
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
-        }
+        });
 
-        let fetched = runtime
-            .block_on(fetch)
+        let Some(fetch_join) = fetched_res else {
+            tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+            return Ok(());
+        };
+
+        let fetched = fetch_join
             .map_err(anyhow::Error::from)
             .and_then(|result| result)
             .and_then(|bytes| {
@@ -431,9 +450,22 @@ fn background_task(
             left,
             event: Some("started"),
         };
-        match runtime.block_on(tracker::announce_all(&meta.trackers, &params, |_| {})) {
-            Ok(peers) => peers,
-            Err(e) => {
+        let announce_res = runtime.block_on(async {
+            let fut = tracker::announce_all(&meta.trackers, &params, |_| {});
+            tokio::pin!(fut);
+            loop {
+                tokio::select! {
+                    res = &mut fut => break Some(res),
+                    cmd = command_rx.recv() => match cmd {
+                        Some(CoreCommand::StopAll) | None => break None,
+                        Some(_) => {}
+                    }
+                }
+            }
+        });
+        match announce_res {
+            Some(Ok(peers)) => peers,
+            Some(Err(e)) => {
                 tx.send((
                     session_id,
                     CoreMessage::Status(format!(
@@ -442,6 +474,10 @@ fn background_task(
                 ))
                 .ok();
                 Vec::new()
+            }
+            None => {
+                tx.send((session_id, CoreMessage::ShutdownComplete)).ok();
+                return Ok(());
             }
         }
     };
@@ -492,16 +528,6 @@ fn background_task(
         }
     };
 
-    let target_path = output_dir.join(&meta.name);
-    let mut is_valid = target_path.exists();
-    if is_valid && target_path.is_file() {
-        if let Ok(metadata) = std::fs::metadata(&target_path) {
-            if metadata.len() == 0 {
-                is_valid = false;
-            }
-        }
-    }
-
     let mut requires_check = false;
     let mut start_paused = false;
 
@@ -510,52 +536,96 @@ fn background_task(
         other => other,
     };
     let manager = match loaded_resume {
-        Ok(Some(state)) if is_valid => {
-            let mgr = TorrentManager::with_selection(
-                meta.pieces_count,
+        Ok(Some(state)) => {
+            let (valid_completed, missing_any) = crate::core::disk::filter_completed_against_disk(
+                &output_dir,
+                &meta.name,
+                total_size,
+                meta.piece_length,
+                meta.files.as_ref(),
+                chosen_files.as_deref(),
                 &state.completed,
-                file_selection.clone(),
-            );
-            tx.send((
-                session_id,
-                CoreMessage::Status(format!(
-                    "Fast resume loaded: {} completed pieces",
-                    mgr.completed_count()
-                )),
-            ))
-            .ok();
-            mgr
-        }
-        Ok(Some(_)) => {
-            tracing::warn!(
-                "Файлы для торрента {} не найдены на диске! Остановка загрузки.",
-                meta.name
-            );
-            let mgr =
-                TorrentManager::with_selection(meta.pieces_count, &[], file_selection.clone());
-            tx.send((
-                session_id,
-                CoreMessage::Status("[ERROR: Missing]".to_string()),
-            ))
-            .ok();
-            tx.send((
-                session_id,
-                CoreMessage::Error("Files missing. Torrent paused.".to_string()),
-            ))
-            .ok(); // signal error state
-                   // Pause the core right away to prevent re-downloading from scratch
-            tx.send((session_id, CoreMessage::PausedState(true))).ok();
-            start_paused = true;
-            mgr
+            )
+            .unwrap_or_else(|_| (Vec::new(), !state.completed.is_empty()));
+
+            if missing_any {
+                tracing::warn!(
+                    "Downloaded files for {} are missing or modified on disk; pausing torrent.",
+                    meta.name
+                );
+                let mgr = TorrentManager::with_selection(
+                    meta.pieces_count,
+                    &valid_completed,
+                    file_selection.clone(),
+                );
+                if valid_completed.is_empty() {
+                    let _ = std::fs::remove_file(&resume_path);
+                    let _ = std::fs::remove_file(&legacy_resume_path);
+                } else {
+                    let cleaned = crate::core::resume::FastResumeState::from_manager(&mgr);
+                    let _ = runtime.block_on(crate::core::resume::save_fastresume(
+                        &resume_path,
+                        &cleaned,
+                    ));
+                }
+                tx.send((session_id, CoreMessage::GlobalProgress(mgr.progress())))
+                    .ok();
+                tx.send((
+                    session_id,
+                    CoreMessage::Status("[ERROR: Missing]".to_string()),
+                ))
+                .ok();
+                tx.send((
+                    session_id,
+                    CoreMessage::Error("Files missing. Torrent paused.".to_string()),
+                ))
+                .ok();
+                tx.send((session_id, CoreMessage::PausedState(true))).ok();
+                start_paused = true;
+                mgr
+            } else {
+                let mgr = TorrentManager::with_selection(
+                    meta.pieces_count,
+                    &valid_completed,
+                    file_selection.clone(),
+                );
+                tx.send((session_id, CoreMessage::GlobalProgress(mgr.progress())))
+                    .ok();
+                tx.send((
+                    session_id,
+                    CoreMessage::Status(format!(
+                        "Fast resume loaded: {} completed pieces",
+                        mgr.completed_count()
+                    )),
+                ))
+                .ok();
+                mgr
+            }
         }
         Ok(None) => {
-            if is_valid && target_path.exists() {
+            if crate::core::disk::any_selected_file_exists(
+                &output_dir,
+                &meta.name,
+                total_size,
+                meta.files.as_ref(),
+                chosen_files.as_deref(),
+            )
+            .unwrap_or(false)
+            {
                 requires_check = true;
             }
             TorrentManager::with_selection(meta.pieces_count, &[], file_selection.clone())
         }
         Err(err) => {
-            if is_valid && target_path.exists() {
+            if crate::core::disk::any_selected_file_exists(
+                &output_dir,
+                &meta.name,
+                total_size,
+                meta.files.as_ref(),
+                chosen_files.as_deref(),
+            )
+            .unwrap_or(false)
+            {
                 requires_check = true;
             }
             tx.send((
@@ -591,13 +661,14 @@ fn background_task(
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                match StandardDisk::init_with_selection(
+                match StandardDisk::init_with_options(
                     &output_dir_c,
                     total_size,
                     meta_piece_length,
                     meta_files.as_ref(),
                     &meta_name,
                     chosen_files_c.as_deref(),
+                    false,
                 )
                 .await
                 {
@@ -797,7 +868,7 @@ fn background_task(
         .or_else(|| meta.files.as_ref().map(|files| vec![true; files.len()]))
         .unwrap_or_default();
 
-    while let Ok(command) = command_rx.recv() {
+    while let Some(command) = command_rx.blocking_recv() {
         match command {
             CoreCommand::SelectionChanged => {
                 let Some(files) = meta.files.as_ref() else {
@@ -857,7 +928,7 @@ struct TorrentSessionState {
     id: usize,
     output_dir: PathBuf,
     source: TorrentSource,
-    command_tx: Sender<CoreCommand>,
+    command_tx: tokio_mpsc::UnboundedSender<CoreCommand>,
     peers: Vec<PeerRow>,
     logs: Vec<String>,
     meta: Option<TorrentMeta>,
@@ -869,7 +940,6 @@ struct TorrentSessionState {
     /// Files of a multi-file torrent to download (`None` = all); read when the swarm starts.
     selection: Arc<Mutex<Option<Vec<bool>>>>,
     is_paused: bool,
-    expanded: bool,
     has_error: bool,
     remove_requested: bool,
     accumulated_rx: usize,
@@ -877,6 +947,7 @@ struct TorrentSessionState {
     download_speed: f64,
     upload_speed: f64,
     last_speed_update: std::time::Instant,
+    speed_history: Vec<(f32, f32)>,
 }
 
 /// Smallest non-zero limit: a 16 KiB block must still go out within the I/O timeout.
@@ -889,10 +960,94 @@ fn apply_speed_limits(store: &crate::core::session_store::SessionStore) {
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarFilter {
+    All,
+    Downloading,
+    Seeding,
+    Completed,
+    Paused,
+    Error,
+}
+
+impl SidebarFilter {
+    const ALL: [SidebarFilter; 6] = [
+        SidebarFilter::All,
+        SidebarFilter::Downloading,
+        SidebarFilter::Seeding,
+        SidebarFilter::Completed,
+        SidebarFilter::Paused,
+        SidebarFilter::Error,
+    ];
+
+    fn label_key(self) -> &'static str {
+        match self {
+            SidebarFilter::All => "All Torrents",
+            SidebarFilter::Downloading => "Downloading",
+            SidebarFilter::Seeding => "Seeding",
+            SidebarFilter::Completed => "Completed",
+            SidebarFilter::Paused => "Paused",
+            SidebarFilter::Error => "Error",
+        }
+    }
+
+    fn matches(self, s: &TorrentSessionState) -> bool {
+        match self {
+            SidebarFilter::All => true,
+            SidebarFilter::Downloading => !s.is_paused && !s.has_error && s.global_progress < 1.0,
+            SidebarFilter::Seeding => !s.is_paused && s.global_progress >= 1.0,
+            SidebarFilter::Completed => s.global_progress >= 1.0,
+            SidebarFilter::Paused => s.is_paused,
+            SidebarFilter::Error => s.has_error,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InspectorTab {
+    General,
+    Trackers,
+    Peers,
+    Files,
+    SpeedGraph,
+    Logs,
+}
+
+impl InspectorTab {
+    const ALL: [InspectorTab; 6] = [
+        InspectorTab::General,
+        InspectorTab::Trackers,
+        InspectorTab::Peers,
+        InspectorTab::Files,
+        InspectorTab::SpeedGraph,
+        InspectorTab::Logs,
+    ];
+
+    fn label_key(self) -> &'static str {
+        match self {
+            InspectorTab::General => "General",
+            InspectorTab::Trackers => "Trackers",
+            InspectorTab::Peers => "Peers",
+            InspectorTab::Files => "Files",
+            InspectorTab::SpeedGraph => "Speed Graph",
+            InspectorTab::Logs => "Logs",
+        }
+    }
+}
+
 struct TorTorApp {
     show_about: bool,
+    show_prefs: bool,
     show_link_input: bool,
     link_input_buffer: String,
+    filter_text: String,
+    theme_id: HeosThemeId,
+    lang: HeosLang,
+    sidebar_filter: SidebarFilter,
+    active_tab: InspectorTab,
+    selected_id: Option<usize>,
+    storage: StorageProbe,
+    last_storage_probe: std::time::Instant,
     tx: Sender<(usize, CoreMessage)>,
     rx: Receiver<(usize, CoreMessage)>,
     sessions: HashMap<usize, TorrentSessionState>,
@@ -901,7 +1056,19 @@ struct TorTorApp {
     runtime: Arc<tokio::runtime::Runtime>,
     session_store: crate::core::session_store::SessionStore,
     quit_requested: bool,
+    shutdown_deadline: Option<std::time::Instant>,
     limits_dirty: bool,
+}
+
+impl Drop for TorTorApp {
+    fn drop(&mut self) {
+        for session in self.sessions.values_mut() {
+            if !session.is_shutting_down {
+                session.is_shutting_down = true;
+                let _ = session.command_tx.send(CoreCommand::StopAll);
+            }
+        }
+    }
 }
 
 impl TorTorApp {
@@ -909,11 +1076,25 @@ impl TorTorApp {
         let (tx, rx) = mpsc::channel();
         let session_store = crate::core::session_store::SessionStore::load_default();
         apply_speed_limits(&session_store);
+        let probe_dir = session_store
+            .entries
+            .first()
+            .map(|e| e.output_dir.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
 
         Self {
             show_about: false,
+            show_prefs: false,
             show_link_input: false,
             link_input_buffer: String::new(),
+            filter_text: String::new(),
+            theme_id: HeosThemeId::IndustrialDark,
+            lang: HeosLang::En,
+            sidebar_filter: SidebarFilter::All,
+            active_tab: InspectorTab::General,
+            selected_id: None,
+            storage: probe_storage_volume(&probe_dir),
+            last_storage_probe: std::time::Instant::now(),
             tx,
             rx,
             sessions: HashMap::new(),
@@ -922,6 +1103,7 @@ impl TorTorApp {
             runtime,
             session_store,
             quit_requested: false,
+            shutdown_deadline: None,
             limits_dirty: false,
         }
     }
@@ -931,10 +1113,18 @@ impl TorTorApp {
         torrent_source: TorrentSource,
         output_dir: PathBuf,
         selected_files: Option<Vec<bool>>,
+        start_paused: bool,
     ) {
-        let (cmd_tx, cmd_rx) = mpsc::channel::<CoreCommand>();
+        let (cmd_tx, cmd_rx) = tokio_mpsc::unbounded_channel::<CoreCommand>();
         let id = self.next_id;
         self.next_id += 1;
+        if self.selected_id.is_none() {
+            self.selected_id = Some(id);
+        }
+
+        if !start_paused {
+            let _ = cmd_tx.send(CoreCommand::StartSwarm);
+        }
 
         let selection = Arc::new(Mutex::new(selected_files));
         let session = TorrentSessionState {
@@ -943,16 +1133,15 @@ impl TorTorApp {
             source: torrent_source.clone(),
             command_tx: cmd_tx,
             peers: Vec::new(),
-            logs: vec![format!("Loading torrent: {:?}", torrent_source)],
+            logs: vec![format!("[ENGINE] Loading torrent: {:?}", torrent_source)],
             meta: None,
             global_progress: 0.0,
             status: format!("Starting core for {:?}", torrent_source),
             is_shutting_down: false,
             delete_requested: false,
-            swarm_started: false,
+            swarm_started: !start_paused,
             selection: selection.clone(),
-            is_paused: false,
-            expanded: true,
+            is_paused: start_paused,
             has_error: false,
             remove_requested: false,
             accumulated_rx: 0,
@@ -960,6 +1149,7 @@ impl TorTorApp {
             download_speed: 0.0,
             upload_speed: 0.0,
             last_speed_update: std::time::Instant::now(),
+            speed_history: Vec::with_capacity(120),
         };
 
         self.sessions.insert(id, session);
@@ -1002,7 +1192,6 @@ impl TorTorApp {
 
     fn pump_messages(&mut self) -> Vec<usize> {
         let mut completed_shutdowns = Vec::new();
-
         while let Ok((id, msg)) = self.rx.try_recv() {
             let Some(session) = self.sessions.get_mut(&id) else {
                 continue;
@@ -1010,24 +1199,18 @@ impl TorTorApp {
             match msg {
                 CoreMessage::Status(text) => {
                     session.status = text.clone();
-                    session.logs.push(text);
+                    session.logs.push(format!("[ENGINE] {text}"));
                 }
                 CoreMessage::PausedState(paused) => {
                     session.is_paused = paused;
-                    if paused {
-                        session.status = "Paused".to_string();
-                    } else {
-                        session.status = "Resumed".to_string();
-                    }
+                    session.status = if paused { "Paused" } else { "Resumed" }.to_string();
                 }
                 CoreMessage::TorrentLoaded(meta) => {
-                    session.logs.push(format!("Loaded torrent: {}", meta.name));
+                    session.logs.push(format!("[ENGINE] Loaded torrent: {}", meta.name));
                     session.meta = Some(meta);
                 }
                 CoreMessage::MetadataReady(meta) => {
-                    session
-                        .logs
-                        .push(format!("Metadata downloaded: {}", meta.name));
+                    session.logs.push(format!("[ENGINE] Metadata ready: {}", meta.name));
                     session.meta = Some((*meta).clone());
                 }
                 CoreMessage::GlobalProgress(progress) => {
@@ -1035,41 +1218,29 @@ impl TorTorApp {
                 }
                 CoreMessage::DownloadComplete => {
                     session.global_progress = 1.0;
-                    session.status = "[SEEDING]".to_string();
-                    session.logs.push(
-                        "All pieces were downloaded. Transitioning to Seeding mode.".to_string(),
-                    );
+                    session.status = "Seeding".to_string();
+                    session.logs.push("[ENGINE] Download complete; seeding.".to_string());
                 }
-                CoreMessage::ShutdownComplete => {
-                    completed_shutdowns.push(id);
-                }
+                CoreMessage::ShutdownComplete => completed_shutdowns.push(id),
                 CoreMessage::PeerFound(addr) => session.peers.push(PeerRow {
                     addr,
                     state: ProbeState::Idle,
                     telemetry: None,
                 }),
                 CoreMessage::TrackerDone(count) => {
-                    session.logs.push(format!("Tracker returned {count} peers"));
+                    session.logs.push(format!("[TRACKER] Returned {count} peers"));
                 }
-                CoreMessage::ProbeQueued(addr) => {
-                    Self::update_peer_state(session, addr, ProbeState::Queued);
-                }
-                CoreMessage::ProbeStarted(addr) => {
-                    Self::update_peer_state(session, addr, ProbeState::Probing);
-                }
-                CoreMessage::ProbeSucceeded(addr, status) => {
-                    Self::update_peer_state(session, addr, ProbeState::Success(status));
-                }
-                CoreMessage::ProbeFailed(addr, err) => {
-                    Self::update_peer_state(session, addr, ProbeState::Failed(err));
-                }
+                CoreMessage::ProbeQueued(addr) => Self::update_peer_state(session, addr, ProbeState::Queued),
+                CoreMessage::ProbeStarted(addr) => Self::update_peer_state(session, addr, ProbeState::Probing),
+                CoreMessage::ProbeSucceeded(addr, st) => Self::update_peer_state(session, addr, ProbeState::Success(st)),
+                CoreMessage::ProbeFailed(addr, err) => Self::update_peer_state(session, addr, ProbeState::Failed(err)),
                 CoreMessage::TelemetryUpdate(addr, telemetry) => {
-                    if let Some(row) = session.peers.iter_mut().find(|row| row.addr == addr) {
+                    if let Some(row) = session.peers.iter_mut().find(|r| r.addr == addr) {
                         row.telemetry = Some(telemetry);
                     }
                 }
                 CoreMessage::Error(err) => {
-                    session.logs.push(format!("Error: {err}"));
+                    session.logs.push(format!("[ERROR] {err}"));
                     session.has_error = true;
                 }
                 CoreMessage::BytesTransferred(rx_bytes, tx_bytes) => {
@@ -1077,162 +1248,411 @@ impl TorTorApp {
                     session.accumulated_tx += tx_bytes;
                 }
             }
+        }
 
-            let now = std::time::Instant::now();
+        let now = std::time::Instant::now();
+        for session in self.sessions.values_mut() {
             let elapsed = now.duration_since(session.last_speed_update).as_secs_f64();
             if elapsed >= 1.0 {
-                session.download_speed = (session.accumulated_rx as f64) / elapsed;
-                session.upload_speed = (session.accumulated_tx as f64) / elapsed;
+                session.download_speed = session.accumulated_rx as f64 / elapsed;
+                session.upload_speed = session.accumulated_tx as f64 / elapsed;
                 session.accumulated_rx = 0;
                 session.accumulated_tx = 0;
                 session.last_speed_update = now;
+                if session.speed_history.len() >= 120 {
+                    session.speed_history.remove(0);
+                }
+                session.speed_history.push((
+                    (session.download_speed / 1024.0) as f32,
+                    (session.upload_speed / 1024.0) as f32,
+                ));
+            }
+        }
+        completed_shutdowns
+    }
+}
+impl TorTorApp {
+    fn render_toolbar(&mut self, ui: &mut egui::Ui, pal: &HeosPalette) {
+        let lang = self.lang;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("TorTor").strong().size(15.0).color(pal.accent));
+            ui.separator();
+
+            if ui.add(egui::Button::new(RichText::new(tr(lang, "+ Torrent")).color(pal.on_accent)).fill(pal.accent)).clicked() {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Torrent", &["torrent"]).pick_file() {
+                    if let Some(dir) = rfd::FileDialog::new().set_title("Select Download Directory").pick_folder() {
+                        let source = TorrentSource::File(path);
+                        self.session_store.entries.push(crate::core::session_store::SessionEntry {
+                            source: source.clone(),
+                            output_dir: dir.clone(),
+                            is_paused: false,
+                            selected_files: None,
+                        });
+                        let _ = self.session_store.save_default();
+                        self.start_core(source, dir, None, false);
+                    }
+                }
+            }
+
+            if ui.button(tr(lang, "+ Magnet")).clicked() {
+                self.show_link_input = !self.show_link_input;
+            }
+
+            let mut pause_update: Option<(TorrentSource, bool)> = None;
+            if let Some(sid) = self.selected_id {
+                if let Some(s) = self.sessions.get_mut(&sid) {
+                    if s.is_paused {
+                        if ui.add_enabled(!s.is_shutting_down, egui::Button::new(tr(lang, "Resume"))).clicked() {
+                            s.is_paused = false;
+                            s.has_error = false;
+                            if !s.swarm_started {
+                                s.swarm_started = true;
+                                let _ = s.command_tx.send(CoreCommand::StartSwarm);
+                            } else {
+                                let _ = s.command_tx.send(CoreCommand::Resume);
+                            }
+                            pause_update = Some((s.source.clone(), false));
+                        }
+                    } else if ui.add_enabled(!s.is_shutting_down, egui::Button::new(tr(lang, "Pause"))).clicked() {
+                        s.is_paused = true;
+                        let _ = s.command_tx.send(CoreCommand::Pause);
+                        pause_update = Some((s.source.clone(), true));
+                    }
+                    if ui.add_enabled(!s.is_shutting_down, egui::Button::new(tr(lang, "Remove"))).clicked() {
+                        s.remove_requested = true;
+                        s.is_shutting_down = true;
+                        let _ = s.command_tx.send(CoreCommand::StopAll);
+                    }
+                    if ui.add_enabled(!s.is_shutting_down, egui::Button::new(tr(lang, "Delete"))).clicked() {
+                        s.delete_requested = true;
+                        s.is_shutting_down = true;
+                        let _ = s.command_tx.send(CoreCommand::StopAll);
+                    }
+                }
+            }
+            if let Some((source, paused)) = pause_update {
+                if let Some(entry) = self.session_store.entries.iter_mut().find(|e| e.source == source) {
+                    entry.is_paused = paused;
+                    let _ = self.session_store.save_default();
+                }
+            }
+
+            if ui.button(tr(lang, "Prefs")).clicked() {
+                self.show_prefs = !self.show_prefs;
+            }
+            if ui.button(tr(lang, "About")).clicked() {
+                self.show_about = !self.show_about;
+            }
+
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter_text)
+                    .desired_width(140.0)
+                    .hint_text(tr(lang, "Filter...")),
+            );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(lang.code()).clicked() {
+                    self.lang = self.lang.toggle();
+                }
+                if ui.button(self.theme_id.label()).clicked() {
+                    self.theme_id = self.theme_id.next();
+                }
+            });
+        });
+
+        if self.show_link_input {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr(lang, "Magnet / URL")).color(pal.focus));
+                ui.text_edit_singleline(&mut self.link_input_buffer);
+                if ui.button(tr(lang, "Confirm")).clicked() && !self.link_input_buffer.trim().is_empty() {
+                    if let Some(dir) = rfd::FileDialog::new().set_title("Select Download Directory").pick_folder() {
+                        let source = TorrentSource::Magnet(self.link_input_buffer.trim().to_string());
+                        self.session_store.entries.push(crate::core::session_store::SessionEntry {
+                            source: source.clone(),
+                            output_dir: dir.clone(),
+                            is_paused: false,
+                            selected_files: None,
+                        });
+                        let _ = self.session_store.save_default();
+                        self.start_core(source, dir, None, false);
+                        self.link_input_buffer.clear();
+                        self.show_link_input = false;
+                    }
+                }
+                if ui.button(tr(lang, "Cancel")).clicked() {
+                    self.show_link_input = false;
+                }
+            });
+        }
+    }
+
+    fn render_sidebar(&mut self, ui: &mut egui::Ui, pal: &HeosPalette) {
+        let lang = self.lang;
+        ui.label(RichText::new(tr(lang, "CATEGORIES")).monospace().size(11.0).color(pal.text_muted));
+        ui.add_space(4.0);
+        for f in SidebarFilter::ALL {
+            let cnt = self.sessions.values().filter(|s| f.matches(s)).count();
+            let text = format!("{} ({cnt})", tr(lang, f.label_key()));
+            let active = self.sidebar_filter == f;
+            let btn = egui::Button::new(RichText::new(text).color(if active { pal.accent } else { pal.text }))
+                .fill(if active { pal.selection } else { Color32::TRANSPARENT })
+                .min_size(egui::vec2(ui.available_width(), 24.0));
+            if ui.add(btn).clicked() {
+                self.sidebar_filter = f;
             }
         }
 
-        completed_shutdowns
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            let port_txt = match &*self.engine.port_map.borrow() {
+                PortMapStatus::Disabled => format!("TCP :{}", self.engine.port),
+                PortMapStatus::Searching => format!("TCP :{} (UPnP...)", self.engine.port),
+                PortMapStatus::Mapped { .. } => format!("TCP :{} (UPnP OK)", self.engine.port),
+                PortMapStatus::Unavailable(_) => format!("TCP :{} (No UPnP)", self.engine.port),
+            };
+            ui.label(RichText::new(port_txt).monospace().size(11.0).color(pal.text_muted));
+
+            if self.storage.available && self.storage.total_bytes > 0 {
+                let frac = (self.storage.used_bytes as f32 / self.storage.total_bytes as f32).clamp(0.0, 1.0);
+                ui.add(egui::ProgressBar::new(frac).text(format!("{} free", human_size(self.storage.free_bytes))));
+            } else {
+                ui.label(RichText::new(format!("{}: N/A", tr(lang, "Storage"))).monospace().size(11.0).color(pal.text_muted));
+            }
+            ui.label(RichText::new(tr(lang, "Storage")).size(11.0).color(pal.text_muted));
+            ui.separator();
+        });
+    }
+
+    fn render_table(&mut self, ui: &mut egui::Ui, pal: &HeosPalette) {
+        let lang = self.lang;
+        let q = self.filter_text.trim().to_ascii_lowercase();
+        let mut ids: Vec<usize> = self.sessions.keys().copied().collect();
+        ids.sort();
+        let visible: Vec<usize> = ids
+            .into_iter()
+            .filter(|id| {
+                let s = &self.sessions[id];
+                if !self.sidebar_filter.matches(s) {
+                    return false;
+                }
+                if q.is_empty() {
+                    return true;
+                }
+                let name = s.meta.as_ref().map(|m| m.name.as_str()).unwrap_or(&s.status);
+                name.to_ascii_lowercase().contains(&q)
+            })
+            .collect();
+
+        if visible.is_empty() {
+            ui.label(RichText::new(tr(lang, "No active torrents. Use + Torrent or + Magnet.")).color(pal.text_muted));
+            return;
+        }
+
+        egui::Grid::new("tortor_main_table")
+            .num_columns(7)
+            .striped(true)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                for h in ["Name", "Size", "State", "Peers", "Down", "Up", "Progress"] {
+                    ui.label(RichText::new(tr(lang, h)).monospace().size(11.0).color(pal.text_muted));
+                }
+                ui.end_row();
+
+                for id in visible {
+                    let s = &self.sessions[&id];
+                    let selected = self.selected_id == Some(id);
+                    let name = s.meta.as_ref().map(|m| m.name.as_str()).unwrap_or("Loading metadata...");
+                    let total_sz = s.meta.as_ref().map(|m| human_size(m.total_length.unwrap_or(0))).unwrap_or_else(|| "--".into());
+                    let state_str = if s.has_error { "Error" } else if s.is_paused { "Paused" } else if s.global_progress >= 1.0 { "Seeding" } else { "Downloading" };
+                    let state_col = if s.has_error { pal.error } else if s.is_paused { pal.text_muted } else if s.global_progress >= 1.0 { pal.success } else { pal.focus };
+
+                    if ui.selectable_label(selected, RichText::new(name).strong()).clicked() {
+                        self.selected_id = Some(id);
+                    }
+                    ui.monospace(total_sz);
+                    ui.label(RichText::new(tr(lang, state_str)).color(state_col).monospace());
+                    ui.monospace(format!("{}", s.peers.len()));
+                    ui.monospace(format!("{}/s", human_size(s.download_speed as u64)));
+                    ui.monospace(format!("{}/s", human_size(s.upload_speed as u64)));
+                    ui.add(egui::ProgressBar::new(s.global_progress).desired_width(120.0).show_percentage());
+                    ui.end_row();
+                }
+            });
+    }
+}
+impl TorTorApp {
+    fn render_inspector(&mut self, ui: &mut egui::Ui, pal: &HeosPalette) {
+        let lang = self.lang;
+        ui.horizontal(|ui| {
+            for tab in InspectorTab::ALL {
+                let active = self.active_tab == tab;
+                let btn = egui::Button::new(RichText::new(tr(lang, tab.label_key())).color(if active { pal.accent } else { pal.text }))
+                    .fill(if active { pal.selection } else { pal.control });
+                if ui.add(btn).clicked() {
+                    self.active_tab = tab;
+                }
+            }
+        });
+        ui.separator();
+
+        let Some(sid) = self.selected_id else {
+            ui.label(RichText::new(tr(lang, "Select a torrent to inspect transfer details.")).color(pal.text_muted));
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&sid) else {
+            ui.label(RichText::new(tr(lang, "Select a torrent to inspect transfer details.")).color(pal.text_muted));
+            return;
+        };
+
+        let mut selection_update: Option<(TorrentSource, Vec<bool>)> = None;
+        match self.active_tab {
+            InspectorTab::General => {
+                ui.monospace(format!("Save Path: {}", session.output_dir.display()));
+                ui.monospace(format!("Status: {}", session.status));
+                if let Some(meta) = &session.meta {
+                    ui.monospace(format!(
+                        "Pieces: {}  |  Progress: {:.1}%  |  DL {}/s  |  UL {}/s",
+                        meta.pieces_count,
+                        session.global_progress * 100.0,
+                        human_size(session.download_speed as u64),
+                        human_size(session.upload_speed as u64),
+                    ));
+                }
+            }
+            InspectorTab::Trackers => {
+                ui.monospace(format!("Listening TCP port: {}", self.engine.port));
+                for line in session.logs.iter().filter(|l| l.contains("[TRACKER]")).rev().take(12) {
+                    ui.monospace(RichText::new(line).color(pal.focus));
+                }
+            }
+            InspectorTab::Peers => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for peer in &session.peers {
+                        let txt = if let Some(t) = &peer.telemetry {
+                            format!(
+                                "{:<22} {} | inflight={} rx={} retries={} dup={}",
+                                peer.addr,
+                                Self::status_label(&peer.state),
+                                t.in_flight_requests,
+                                human_size(t.downloaded_bytes as u64),
+                                t.retries,
+                                t.duplicate_blocks,
+                            )
+                        } else {
+                            format!("{:<22} {}", peer.addr, Self::status_label(&peer.state))
+                        };
+                        ui.monospace(txt);
+                    }
+                });
+            }
+            InspectorTab::Files => {
+                if let Some(meta) = &session.meta {
+                    if let Some(files) = &meta.files {
+                        if let Some(flags) = file_picker(ui, sid, files, session) {
+                            selection_update = Some((session.source.clone(), flags));
+                            if session.swarm_started {
+                                let _ = session.command_tx.send(CoreCommand::SelectionChanged);
+                            }
+                        }
+                    } else {
+                        ui.monospace(format!("Single file: {} ({})", meta.name, human_size(meta.total_length.unwrap_or(0))));
+                    }
+                } else {
+                    ui.label(RichText::new("Waiting for torrent metadata...").color(pal.warning));
+                }
+            }
+            InspectorTab::SpeedGraph => {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 140.0), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, pal.document);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, pal.line));
+                let max_val = session
+                    .speed_history
+                    .iter()
+                    .flat_map(|(d, u)| [*d, *u])
+                    .fold(10.0_f32, f32::max);
+                let n = session.speed_history.len();
+                if n > 1 {
+                    let dl_pts: Vec<egui::Pos2> = session
+                        .speed_history
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (d, _))| {
+                            let x = rect.left() + 6.0 + (i as f32 / (n - 1) as f32) * (rect.width() - 12.0);
+                            let y = rect.bottom() - 6.0 - (*d / max_val) * (rect.height() - 12.0);
+                            egui::pos2(x, y)
+                        })
+                        .collect();
+                    let ul_pts: Vec<egui::Pos2> = session
+                        .speed_history
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, u))| {
+                            let x = rect.left() + 6.0 + (i as f32 / (n - 1) as f32) * (rect.width() - 12.0);
+                            let y = rect.bottom() - 6.0 - (*u / max_val) * (rect.height() - 12.0);
+                            egui::pos2(x, y)
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(dl_pts, egui::Stroke::new(2.0_f32, pal.focus)));
+                    painter.add(egui::Shape::line(ul_pts, egui::Stroke::new(2.0_f32, pal.accent)));
+                }
+                ui.monospace(format!("Peak scale: {:.1} KiB/s", max_val));
+            }
+            InspectorTab::Logs => {
+                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                    for line in session.logs.iter().rev().take(80).rev() {
+                        let col = if line.contains("[ERROR]") {
+                            pal.error
+                        } else if line.contains("[TRACKER]") {
+                            pal.focus
+                        } else {
+                            pal.text
+                        };
+                        ui.label(RichText::new(line).monospace().color(col));
+                    }
+                });
+            }
+        }
+
+        if let Some((source, flags)) = selection_update {
+            if let Some(entry) = self.session_store.entries.iter_mut().find(|e| e.source == source) {
+                entry.selected_files = Some(flags);
+                let _ = self.session_store.save_default();
+            }
+        }
     }
 }
 
 impl eframe::App for TorTorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut visuals = egui::Visuals::dark();
-        visuals.window_fill = Color32::from_rgb(10, 15, 26);
-        visuals.panel_fill = Color32::from_rgb(10, 15, 26);
-        visuals.selection.bg_fill = Color32::from_rgb(0, 210, 255);
-        visuals.selection.stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(0, 255, 209));
-        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(15, 25, 40);
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(25, 40, 60);
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(0, 210, 255);
-        visuals.widgets.active.bg_fill = Color32::from_rgb(0, 255, 209);
-        visuals.override_text_color = Some(Color32::from_rgb(230, 240, 255));
-        ctx.set_visuals(visuals);
+        let pal = self.theme_id.palette();
+        pal.apply_to_ctx(ctx);
 
-        let mut about_open = self.show_about;
-        egui::Window::new("About TorTor")
-            .open(&mut about_open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("🌀 TorTor")
-                            .size(36.0)
-                            .strong()
-                            .color(Color32::from_rgb(0, 210, 255)),
-                    );
-                    ui.label(
-                        RichText::new(concat!("Version ", env!("CARGO_PKG_VERSION")))
-                            .size(14.0)
-                            .color(Color32::from_rgb(0, 255, 209)),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("High-performance BitTorrent client")
-                            .italics()
-                            .color(Color32::LIGHT_GRAY),
-                    );
-                    ui.add_space(15.0);
-                });
+        if self.last_storage_probe.elapsed().as_secs() >= 5 {
+            let probe_dir = self
+                .sessions
+                .values()
+                .next()
+                .map(|s| s.output_dir.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            self.storage = probe_storage_volume(&probe_dir);
+            self.last_storage_probe = std::time::Instant::now();
+        }
 
-                ui.group(|ui| {
-                    ui.label(
-                        RichText::new("🚀 Key Features:")
-                            .strong()
-                            .color(Color32::WHITE),
-                    );
-                    ui.add_space(5.0);
-                    let features = [
-                        "⚡ Dynamic SIMD dispatch (AVX2/SSE4.1)",
-                        "📂 Multi-file torrent & Session isolation",
-                        "🛡️ Memory-safe piece assembler",
-                        "🔄 Zero-copy I/O with Tokio",
-                        "🌐 Kademlia DHT & PEX Support",
-                    ];
-                    for f in features {
-                        ui.label(RichText::new(f).color(Color32::from_rgb(200, 220, 255)));
-                    }
-                });
-
-                ui.add_space(15.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Created by: mjojo <GLK Dev>")
-                            .size(12.0)
-                            .color(Color32::from_rgb(100, 150, 200)),
-                    );
-                    ui.add_space(5.0);
-                });
-            });
-        self.show_about = about_open;
-
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                if ui.button("About").clicked() {
-                    self.show_about = true;
-                }
-
-                ui.separator();
-                let store = &mut self.session_store;
-                let mut changed = false;
-                for (label, value) in [
-                    ("↓ KiB/s", &mut store.download_limit_kib),
-                    ("↑ KiB/s", &mut store.upload_limit_kib),
-                ] {
-                    ui.label(label);
-                    changed |= ui
-                        .add(egui::DragValue::new(value).range(0..=1_000_000).speed(10))
-                        .on_hover_text("Speed limit for all torrents; 0 means unlimited (otherwise at least 4)")
-                        .changed();
-                }
-                if changed {
-                    for value in [&mut store.download_limit_kib, &mut store.upload_limit_kib] {
-                        if *value > 0 {
-                            *value = (*value).max(MIN_LIMIT_KIB);
-                        }
-                    }
-                    apply_speed_limits(store);
-                    self.limits_dirty = true;
-                }
-                ui.separator();
-                let (text, hover) = match &*self.engine.port_map.borrow() {
-                    PortMapStatus::Disabled => (format!("Port {}", self.engine.port), String::new()),
-                    PortMapStatus::Searching => (
-                        format!("Port {} (UPnP…)", self.engine.port),
-                        "Looking for a UPnP router".to_string(),
-                    ),
-                    PortMapStatus::Mapped { external_ip } => (
-                        format!("Port {} (UPnP ✓)", self.engine.port),
-                        format!("Forwarded by the router; external address: {external_ip:?}"),
-                    ),
-                    PortMapStatus::Unavailable(reason) => (
-                        format!("Port {} (UPnP ✗)", self.engine.port),
-                        format!("{reason}. Forward the port manually for incoming connections."),
-                    ),
-                };
-                let label = ui.label(text);
-                if !hover.is_empty() {
-                    label.on_hover_text(hover);
-                }
-                // Persist once the drag is over instead of on every step.
-                if self.limits_dirty && !ui.input(|i| i.pointer.any_down()) {
-                    let _ = self.session_store.save_default();
-                    self.limits_dirty = false;
-                }
-            });
-        });
-
-        // Graceful shutdown on window close
         if ctx.input(|i| i.viewport().close_requested()) {
             self.quit_requested = true;
+            self.shutdown_deadline
+                .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(3));
             for session in self.sessions.values_mut() {
                 if !session.is_shutting_down {
                     session.is_shutting_down = true;
                     let _ = session.command_tx.send(CoreCommand::StopAll);
                 }
             }
-            if !self.sessions.is_empty() {
+            let deadline_reached = self
+                .shutdown_deadline
+                .is_some_and(|d| std::time::Instant::now() >= d);
+            if !self.sessions.is_empty() && !deadline_reached {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
@@ -1241,346 +1661,83 @@ impl eframe::App for TorTorApp {
         for id in completed_shutdowns {
             if let Some(session) = self.sessions.remove(&id) {
                 if session.remove_requested || session.delete_requested {
-                    self.session_store
-                        .entries
-                        .retain(|e| e.source != session.source);
+                    self.session_store.entries.retain(|e| e.source != session.source);
                     let _ = self.session_store.save_default();
                 }
-
                 if session.delete_requested {
                     if let Some(meta) = &session.meta {
                         let target_path = session.output_dir.join(&meta.name);
                         let _ = std::fs::remove_dir_all(&target_path);
                         let _ = std::fs::remove_file(&target_path);
+                        let _ = std::fs::remove_file(crate::core::fsutil::resume_file(&meta.info_hash));
                     }
-                    if let Some(meta) = &session.meta {
-                        let _ =
-                            std::fs::remove_file(crate::core::fsutil::resume_file(&meta.info_hash));
-                    }
-                    if let crate::core::session_store::TorrentSource::File(path) = &session.source {
+                    if let TorrentSource::File(path) = &session.source {
                         let _ = std::fs::remove_file(path.with_extension("fastresume"));
                         let _ = std::fs::remove_file(path.with_extension("download.part"));
                     }
                 }
+                if self.selected_id == Some(id) {
+                    self.selected_id = self.sessions.keys().copied().next();
+                }
             }
         }
-
-        if self.quit_requested && self.sessions.is_empty() {
+        let deadline_reached = self
+            .shutdown_deadline
+            .is_some_and(|d| std::time::Instant::now() >= d);
+        if self.quit_requested && (self.sessions.is_empty() || deadline_reached) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("TorTor Download Manager");
-                if ui
-                    .button(
-                        egui::RichText::new("[ Добавить файл ]")
-                            .family(egui::FontFamily::Monospace),
-                    )
-                    .clicked()
-                {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Torrent Files", &["torrent"])
-                        .pick_file()
-                    {
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_title("Select Download Directory")
-                            .pick_folder()
-                        {
-                            let source = crate::core::session_store::TorrentSource::File(path);
-                            self.session_store.entries.push(
-                                crate::core::session_store::SessionEntry {
-                                    source: source.clone(),
-                                    output_dir: dir.clone(),
-                                    is_paused: false,
-                                    selected_files: None,
-                                },
-                            );
-                            let _ = self.session_store.save_default();
-                            self.start_core(source, dir, None);
-                        }
-                    }
+        let mut about_open = self.show_about;
+        egui::Window::new("About TorTor").open(&mut about_open).resizable(false).show(ctx, |ui| {
+            ui.label(RichText::new("TorTor BitTorrent").size(22.0).strong().color(pal.accent));
+            ui.monospace(concat!("Version ", env!("CARGO_PKG_VERSION")));
+            ui.label("Copyright (c) 2026 Vitaly Golik (mjojo) · MIT / Apache-2.0");
+        });
+        self.show_about = about_open;
+
+        let mut prefs_open = self.show_prefs;
+        egui::Window::new(tr(self.lang, "Prefs")).open(&mut prefs_open).resizable(false).show(ctx, |ui| {
+            ui.label(tr(self.lang, "Global Speed Limits (KiB/s, 0 = unlimited)"));
+            let store = &mut self.session_store;
+            let dl_changed = ui.horizontal(|ui| {
+                ui.label(tr(self.lang, "Download KiB/s"));
+                ui.add(egui::DragValue::new(&mut store.download_limit_kib).speed(10).range(0..=1_000_000)).changed()
+            }).inner;
+            let ul_changed = ui.horizontal(|ui| {
+                ui.label(tr(self.lang, "Upload KiB/s"));
+                ui.add(egui::DragValue::new(&mut store.upload_limit_kib).speed(10).range(0..=1_000_000)).changed()
+            }).inner;
+            if dl_changed || ul_changed {
+                for v in [&mut store.download_limit_kib, &mut store.upload_limit_kib] {
+                    if *v > 0 { *v = (*v).max(MIN_LIMIT_KIB); }
                 }
-
-                if ui
-                    .button(
-                        egui::RichText::new("[ Добавить ссылку ]")
-                            .family(egui::FontFamily::Monospace),
-                    )
-                    .clicked()
-                {
-                    self.show_link_input = !self.show_link_input;
-                }
-            });
-
-            if self.show_link_input {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("> URL/Magnet:")
-                            .family(egui::FontFamily::Monospace)
-                            .color(egui::Color32::GREEN),
-                    );
-                    ui.text_edit_singleline(&mut self.link_input_buffer);
-
-                    if ui
-                        .button(egui::RichText::new("[ OK ]").family(egui::FontFamily::Monospace))
-                        .clicked()
-                    {
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_title("Select Download Directory")
-                            .pick_folder()
-                        {
-                            let source = crate::core::session_store::TorrentSource::Magnet(
-                                self.link_input_buffer.clone(),
-                            );
-                            self.session_store.entries.push(
-                                crate::core::session_store::SessionEntry {
-                                    source: source.clone(),
-                                    output_dir: dir.clone(),
-                                    is_paused: false,
-                                    selected_files: None,
-                                },
-                            );
-                            let _ = self.session_store.save_default();
-                            self.start_core(source, dir, None);
-
-                            self.link_input_buffer.clear();
-                            self.show_link_input = false;
-                        }
-                    }
-                });
-            }
-            ui.separator();
-
-            if self.sessions.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("No active downloads. Click '+ Add Torrent' to start.");
-                });
-                return;
-            }
-
-            let mut selection_update: Option<(TorrentSource, Vec<bool>)> = None;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let mut ids: Vec<usize> = self.sessions.keys().copied().collect();
-                ids.sort_unstable(); // Keep order consistent
-
-                for id in ids {
-                    let session = self.sessions.get_mut(&id).unwrap();
-                    let name = session
-                        .meta
-                        .as_ref()
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| "Loading...".to_string());
-
-                    let bg_color = if session.global_progress >= 1.0 {
-                        Color32::from_rgb(10, 70, 50) // completed: dark green-teal
-                    } else if session.is_shutting_down {
-                        Color32::from_rgb(70, 20, 30)
-                    } else {
-                        Color32::from_rgb(20, 35, 55) // downloading: dark blue slate
-                    };
-
-                    let frame = egui::Frame::none()
-                        .fill(bg_color)
-                        .rounding(8.0)
-                        .inner_margin(12.0)
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            Color32::from_rgb(0, 150, 200).linear_multiply(0.3),
-                        ));
-
-                    frame.show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let icon = if session.expanded { "▼" } else { "▶" };
-                            let ascii_bar = ascii_progress_bar(session.global_progress, 15);
-                            let title = format!("{} {}  {}", icon, name, ascii_bar);
-
-                            let text_color = if session.has_error {
-                                Color32::from_rgb(255, 50, 80)
-                            } else if session.global_progress >= 1.0 {
-                                Color32::from_rgb(0, 255, 209)
-                            } else {
-                                Color32::from_rgb(0, 210, 255)
-                            };
-
-                            // The clickable bar
-                            let btn = ui.add_sized(
-                                [ui.available_width(), 35.0],
-                                egui::Button::new(
-                                    RichText::new(title)
-                                        .size(18.0)
-                                        .monospace()
-                                        .color(text_color),
-                                )
-                                .fill(Color32::TRANSPARENT),
-                            );
-
-                            if btn.clicked() {
-                                session.expanded = !session.expanded;
-                            }
-                        });
-
-                        if session.expanded {
-                            ui.add_space(8.0);
-                            let status_color = if session.global_progress >= 1.0 {
-                                Color32::from_rgb(0, 255, 209)
-                            } else {
-                                Color32::from_rgb(200, 220, 255)
-                            };
-
-                            ui.label(
-                                RichText::new(format!("📁 Path: {}", session.output_dir.display()))
-                                    .color(Color32::WHITE),
-                            );
-                            ui.label(
-                                RichText::new(format!("📌 Status: {}", session.status))
-                                    .color(status_color),
-                            );
-
-                            let dl_mbs = session.download_speed / 1_048_576.0;
-                            let ul_mbs = session.upload_speed / 1_048_576.0;
-                            ui.label(
-                                RichText::new(format!(
-                                    "⚡ Speed: DL {:.2} MB/s | UL {:.2} MB/s",
-                                    dl_mbs, ul_mbs
-                                ))
-                                .color(Color32::from_rgb(255, 200, 50)),
-                            );
-
-                            ui.label(
-                                RichText::new(format!("👥 Peers: {}", session.peers.len()))
-                                    .color(Color32::WHITE),
-                            );
-
-                            if let Some(meta) = &session.meta {
-                                ui.label(
-                                    RichText::new(format!("📦 Pieces: {}", meta.pieces_count))
-                                        .color(Color32::LIGHT_GRAY),
-                                );
-                                if let Some(files) = &meta.files {
-                                    if let Some(flags) = file_picker(ui, id, files, session) {
-                                        selection_update = Some((session.source.clone(), flags));
-                                        if session.swarm_started {
-                                            let _ = session
-                                                .command_tx
-                                                .send(CoreCommand::SelectionChanged);
-                                        }
-                                    }
-                                }
-                            }
-
-                            ui.add_space(8.0);
-
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        !session.swarm_started
-                                            && !session.is_shutting_down
-                                            && !session.has_error,
-                                        egui::Button::new("▶ Start Swarm"),
-                                    )
-                                    .clicked()
-                                {
-                                    session.swarm_started = true;
-                                    let _ = session.command_tx.send(CoreCommand::StartSwarm);
-                                }
-
-                                if session.swarm_started {
-                                    if !session.is_paused {
-                                        if ui
-                                            .add_enabled(
-                                                !session.is_shutting_down,
-                                                egui::Button::new("⏸ Пауза"),
-                                            )
-                                            .clicked()
-                                        {
-                                            session.is_paused = true;
-                                            let _ = session.command_tx.send(CoreCommand::Pause);
-                                        }
-                                    } else {
-                                        if ui
-                                            .add_enabled(
-                                                !session.is_shutting_down,
-                                                egui::Button::new("▶ Возобновить"),
-                                            )
-                                            .clicked()
-                                        {
-                                            session.is_paused = false;
-                                            let _ = session.command_tx.send(CoreCommand::Resume);
-                                        }
-                                    }
-                                }
-
-                                if ui
-                                    .add_enabled(
-                                        !session.is_shutting_down,
-                                        egui::Button::new("❌ Remove"),
-                                    )
-                                    .clicked()
-                                {
-                                    session.remove_requested = true;
-                                    session.is_shutting_down = true;
-                                    let _ = session.command_tx.send(CoreCommand::StopAll);
-                                }
-
-                                if ui
-                                    .add_enabled(
-                                        !session.is_shutting_down,
-                                        egui::Button::new("🗑 Remove + Files"),
-                                    )
-                                    .clicked()
-                                {
-                                    session.remove_requested = true;
-                                    session.delete_requested = true;
-                                    session.is_shutting_down = true;
-                                    let _ = session.command_tx.send(CoreCommand::StopAll);
-                                }
-                            });
-
-                            ui.separator();
-
-                            egui::ScrollArea::vertical()
-                                .id_salt(id)
-                                .max_height(100.0)
-                                .show(ui, |ui| {
-                                    for row in &session.peers {
-                                        ui.horizontal(|ui| {
-                                            ui.monospace(row.addr.to_string());
-                                            ui.label(Self::status_label(&row.state));
-                                            if let Some(tel) = &row.telemetry {
-                                                ui.label(format!(
-                                                    "| In-flight: {}",
-                                                    tel.in_flight_requests
-                                                ));
-                                                ui.label(format!(
-                                                    "| Drops: {}",
-                                                    tel.unexpected_blocks + tel.duplicate_blocks
-                                                ));
-                                            }
-                                        });
-                                    }
-                                });
-                        }
-                    });
-                    ui.add_space(8.0);
-                }
-            });
-
-            if let Some((source, flags)) = selection_update {
-                let all = flags.iter().all(|keep| *keep);
-                if let Some(entry) = self
-                    .session_store
-                    .entries
-                    .iter_mut()
-                    .find(|entry| entry.source == source)
-                {
-                    entry.selected_files = (!all).then_some(flags);
-                    let _ = self.session_store.save_default();
-                }
+                apply_speed_limits(store);
+                self.limits_dirty = true;
             }
         });
+        self.show_prefs = prefs_open;
+        if self.limits_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            let _ = self.session_store.save_default();
+            self.limits_dirty = false;
+        }
 
-        ctx.request_repaint();
+        egui::TopBottomPanel::top("tortor_toolbar").show(ctx, |ui| {
+            self.render_toolbar(ui, &pal);
+        });
+        egui::SidePanel::left("tortor_sidebar").exact_width(196.0).show(ctx, |ui| {
+            self.render_sidebar(ui, &pal);
+        });
+        egui::TopBottomPanel::bottom("tortor_inspector").exact_height(216.0).show(ctx, |ui| {
+            self.render_inspector(ui, &pal);
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::both().show(ui, |ui| {
+                self.render_table(ui, &pal);
+            });
+        });
+
+        ctx.request_repaint_after(std::time::Duration::from_millis(120));
     }
 }

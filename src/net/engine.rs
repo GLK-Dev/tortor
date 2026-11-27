@@ -208,14 +208,22 @@ impl Engine {
     pub async fn shutdown_graceful(&self) {
         self.shutdown();
         let task = self.portmap_task.lock().unwrap().take();
-        if let Some(task) = task {
-            let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
+        if let Some(mut task) = task {
+            if tokio::time::timeout(Duration::from_secs(2), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+            }
         }
     }
 
     /// Stops accepting connections. Torrent sessions are stopped through their own shutdown signal.
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
+        if let Some(dht) = &self.dht {
+            let _ = dht.try_send(DhtManagerCommand::Shutdown);
+        }
         self.quic_endpoint.close(0u32.into(), b"shutdown");
     }
 }

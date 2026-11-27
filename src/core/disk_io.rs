@@ -21,4 +21,10 @@ pub trait AsyncDiskIO {
     async fn set_selection(&mut self, _selected: &[bool]) -> Result<()> {
         Ok(())
     }
+
+    /// Closes open OS file handles so completed or paused downloads do not
+    /// keep files locked on disk (especially on Windows).
+    async fn release_handles(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
