@@ -59,6 +59,12 @@ const SEARCH_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24
   <path d="M15 15L20 20" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="square"/>
 </svg>"##;
 
+const INFO_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="9" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+  <circle cx="12" cy="8" r="1.2" fill="#FFFFFF"/>
+  <path d="M12 11.2V16.8" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="square"/>
+</svg>"##;
+
 pub fn ensure_icons(env: &Env) {
     let mut host = env.icons.borrow_mut();
     if host.cache.contains("tortor_logo") {
@@ -70,4 +76,5 @@ pub fn ensure_icons(env: &Env) {
     host.cache.add_source("play", PLAY_SVG);
     host.cache.add_source("trash", TRASH_SVG);
     host.cache.add_source("search", SEARCH_SVG);
+    host.cache.add_source("info", INFO_SVG);
 }

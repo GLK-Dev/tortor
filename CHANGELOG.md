@@ -4,6 +4,7 @@
 
 ### UI & Localization / Интерфейс и локализация
 - **Hey GUI rewrite:** replaced the `egui`/`eframe` interface with a custom Industrial Dark desktop interface built on the `Hey` UI framework (`hey-core`, `hey-draw`, `hey-layout`, `hey-style`, `hey-text`, `hey-widgets`, `hey-shell`, `hey-i18n`).
+- **About dialog:** added localized **About TorTor** modal with logo, package version, author, license, and repository link.
 - **New layout & inspector:** sidebar category/tag filters, toolbar search filter, torrent table with multi-state progress bars, and tabbed bottom inspector (General with piece availability map, Files, Peers, Trackers, Logs) plus live DHT node count and UPnP port status in the status bar.
 - **Multilingual UI (RU / EN):** restored full Russian and English localization using Fluent `.ftl` catalogs via `hey-i18n`, locale-aware size/speed/ETA formatting, and persisted `SessionStore::language`.
 - **System `TextScaleFactor` & window resizing:** custom widgets and layout metrics now scale proportionally via `theme.scale()` / `theme.space()`, and the main layout stretches across the entire OS window on resize.

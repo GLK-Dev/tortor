@@ -186,6 +186,32 @@ impl<Msg: 'static> Widget<Msg> for ModalBackdrop<Msg> {
     }
 }
 
+/// Standalone TorTor logo image for the About modal.
+pub struct LogoBadge;
+
+impl LogoBadge {
+    pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, base_px: f32) -> NodeId {
+        let px = ui.env.theme.space(base_px).max(24.0);
+        let mut st = Style::leaf().pass_through();
+        st.width = Dim::Px(px);
+        st.height = Dim::Px(px);
+        ui.add_widget(parent, st, LogoBadge, move |_| Size::new(px, px))
+    }
+}
+
+impl<Msg> Widget<Msg> for LogoBadge {
+    fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
+        ensure_icons(env);
+        let px = rect.w.min(rect.h).round().max(16.0) as u32;
+        if let Some(image) = env.icons.borrow_mut().get("tortor_logo", px, None) {
+            out.push(DrawCmd::Image {
+                rect: Rect::new(rect.x, rect.y, px as f32, px as f32),
+                image,
+            });
+        }
+    }
+}
+
 /// Sidebar header: Tortor logo icon + bold title.
 pub struct SidebarHeader;
 
@@ -354,15 +380,16 @@ impl<Msg: 'static> ActionButton<Msg> {
         on_click: Callback<Msg, ()>,
     ) -> NodeId {
         let env = ui.env.clone();
+        let h = env.theme.space(32.0);
         let w = if let Some(text) = label {
             let l = layout(&env.fonts, text, &text_style(&env, 13.0, None, TextAlign::Left));
-            34.0 + l.width.ceil() + 14.0
+            env.theme.space(34.0) + l.width.ceil() + env.theme.space(14.0)
         } else {
-            32.0
+            h
         };
         let mut st = Style::leaf();
         st.width = Dim::Px(w);
-        st.height = Dim::Px(32.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -373,7 +400,7 @@ impl<Msg: 'static> ActionButton<Msg> {
                 filled,
                 on_click,
             },
-            move |_| Size::new(w, 32.0),
+            move |_| Size::new(w, h),
         )
     }
 }
@@ -414,7 +441,7 @@ impl<Msg: 'static> Widget<Msg> for ActionButton<Msg> {
             shadow: None,
         });
 
-        let icon_sz = 15u32;
+        let icon_sz = env.theme.space(15.0).max(12.0) as u32;
         let tint = if state.disabled() {
             TEXT_DIM
         } else {
@@ -422,7 +449,7 @@ impl<Msg: 'static> Widget<Msg> for ActionButton<Msg> {
         };
         if let Some(img) = env.icons.borrow_mut().get(self.icon, icon_sz, Some(tint)) {
             let ix = if self.label.is_some() {
-                rect.x + 11.0
+                rect.x + env.theme.space(11.0)
             } else {
                 rect.x + (rect.w - icon_sz as f32) / 2.0
             };
@@ -436,7 +463,7 @@ impl<Msg: 'static> Widget<Msg> for ActionButton<Msg> {
             let l = layout(&env.fonts, text, &text_style(env, 13.0, None, TextAlign::Left));
             let ty = rect.y + (rect.h - l.height) / 2.0;
             let fg = if state.disabled() { TEXT_DIM } else { TEXT };
-            for run in l.to_runs(Point::new(rect.x + 32.0, ty), fg) {
+            for run in l.to_runs(Point::new(rect.x + env.theme.space(32.0), ty), fg) {
                 out.push(DrawCmd::Text(run));
             }
         }
@@ -463,9 +490,11 @@ impl<Msg: 'static> FilterInput<Msg> {
         width: f32,
         on_change: Callback<Msg, String>,
     ) -> NodeId {
+        let w = ui.env.theme.space(width);
+        let h = ui.env.theme.space(32.0);
         let mut st = Style::leaf();
-        st.width = Dim::Px(width);
-        st.height = Dim::Px(32.0);
+        st.width = Dim::Px(w);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -476,12 +505,17 @@ impl<Msg: 'static> FilterInput<Msg> {
                 on_change,
                 scroll: Cell::new(0.0),
             },
-            move |_| Size::new(width, 32.0),
+            move |_| Size::new(w, h),
         )
     }
 
     fn x_of(&self, env: &Env, byte: usize) -> f32 {
-        measure(&env.fonts, &self.edit.text()[..byte], &env.chain, 13.0)
+        measure(
+            &env.fonts,
+            &self.edit.text()[..byte],
+            &env.chain,
+            (13.0 * env.theme.scale()).max(1.0),
+        )
     }
 
     fn changed(&self, before: &str, sink: &MsgSink<Msg>) {
@@ -535,15 +569,21 @@ impl<Msg: 'static> Widget<Msg> for FilterInput<Msg> {
             color: line_col,
         });
 
-        if let Some(img) = env.icons.borrow_mut().get("search", 14, Some(TEXT_MUTED)) {
+        let icon_sz = env.theme.space(14.0).max(12.0) as u32;
+        if let Some(img) = env.icons.borrow_mut().get("search", icon_sz, Some(TEXT_MUTED)) {
             out.push(DrawCmd::Image {
-                rect: Rect::new(rect.x + 10.0, rect.y + (rect.h - 14.0) / 2.0, 14.0, 14.0),
+                rect: Rect::new(
+                    rect.x + env.theme.space(10.0),
+                    rect.y + (rect.h - icon_sz as f32) / 2.0,
+                    icon_sz as f32,
+                    icon_sz as f32,
+                ),
                 image: img,
             });
         }
 
-        let text_left = rect.x + 32.0;
-        let inner_w = (rect.w - 42.0).max(10.0);
+        let text_left = rect.x + env.theme.space(32.0);
+        let inner_w = (rect.w - env.theme.space(42.0)).max(10.0);
         out.push(DrawCmd::ClipPush(Rect::new(
             text_left - 1.0,
             rect.y,
@@ -718,9 +758,11 @@ pub struct TableHeader {
 
 impl TableHeader {
     pub fn add<Msg: 'static>(ui: &mut Ui<Msg>, parent: NodeId, cols: [String; 4]) -> NodeId {
+        let h = ui.env.theme.space(30.0);
+        let w = ui.env.theme.space(500.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(30.0);
-        ui.add_widget(parent, st, TableHeader { cols }, |_| Size::new(500.0, 30.0))
+        st.height = Dim::Px(h);
+        ui.add_widget(parent, st, TableHeader { cols }, move |_| Size::new(w, h))
     }
 }
 
@@ -781,13 +823,15 @@ impl<Msg: 'static> TorrentRow<Msg> {
         props: TorrentRowProps,
         on_select: Callback<Msg, ()>,
     ) -> NodeId {
+        let h = ui.env.theme.space(54.0);
+        let w = ui.env.theme.space(500.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(54.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
             TorrentRow { props, on_select },
-            |_| Size::new(500.0, 54.0),
+            move |_| Size::new(w, h),
         )
     }
 }
@@ -809,9 +853,10 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
         } else if state.hovered() {
             out.push(DrawCmd::fill(rect, ROW_HOVER));
         }
+        let pad = env.theme.space(18.0);
         out.push(DrawCmd::Line {
-            a: Point::new(rect.x + 18.0, rect.bottom() - 0.5),
-            b: Point::new(rect.right() - 18.0, rect.bottom() - 0.5),
+            a: Point::new(rect.x + pad, rect.bottom() - 0.5),
+            b: Point::new(rect.right() - pad, rect.bottom() - 0.5),
             width: 1.0,
             color: ROW_DIVIDER,
         });
@@ -829,7 +874,7 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
             env,
             &self.props.name,
             13.5,
-            Point::new(c.name_x, rect.y + 9.0),
+            Point::new(c.name_x, rect.y + env.theme.space(9.0)),
             Some(c.name_w),
             TextAlign::Left,
             TEXT,
@@ -839,27 +884,30 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
             env,
             &self.props.subtitle,
             11.5,
-            Point::new(c.name_x, rect.y + 30.0),
+            Point::new(c.name_x, rect.y + env.theme.space(30.0)),
             Some(c.name_w),
             TextAlign::Left,
             status_color,
             out,
         );
 
-        let mid_y = rect.y + 18.0;
         let right_text = |text: &str, x: f32, w: f32, color: Color, out: &mut DisplayList| {
             let st = text_style(env, 12.5, Some(w), TextAlign::Right);
             let l = layout(&env.fonts, text, &st);
-            for run in l.to_runs(Point::new(x + w - l.width, mid_y), color) {
+            let ty = rect.y + (rect.h - l.height) / 2.0;
+            for run in l.to_runs(Point::new(x + w - l.width, ty), color) {
                 out.push(DrawCmd::Text(run));
             }
         };
 
         right_text(&self.props.size_text, c.size_x, c.size_w, TEXT_MUTED, out);
 
-        let bar_w = (c.prog_w - 46.0).max(40.0);
-        let bar_y = rect.y + (rect.h - 4.0) / 2.0;
-        out.push(DrawCmd::fill(Rect::new(c.prog_x, bar_y, bar_w, 4.0), BAR_TRACK));
+        let pct_w = env.theme.space(40.0);
+        let pct_gap = env.theme.space(6.0);
+        let bar_w = (c.prog_w - pct_w - pct_gap).max(env.theme.space(40.0));
+        let bar_h = env.theme.space(4.0).max(4.0);
+        let bar_y = rect.y + (rect.h - bar_h) / 2.0;
+        out.push(DrawCmd::fill(Rect::new(c.prog_x, bar_y, bar_w, bar_h), BAR_TRACK));
         let frac = (self.props.progress_milli as f32 / 1000.0).clamp(0.0, 1.0);
         if frac > 0.0 {
             let fill_col = if self.props.status_kind == 3 {
@@ -868,14 +916,14 @@ impl<Msg: 'static> Widget<Msg> for TorrentRow<Msg> {
                 status_color
             };
             out.push(DrawCmd::fill(
-                Rect::new(c.prog_x, bar_y, (bar_w * frac).max(3.0), 4.0),
+                Rect::new(c.prog_x, bar_y, (bar_w * frac).max(3.0), bar_h),
                 fill_col,
             ));
         }
         right_text(
             &self.props.pct_text,
-            c.prog_x + bar_w + 6.0,
-            40.0,
+            c.prog_x + bar_w + pct_gap,
+            pct_w,
             TEXT_MUTED,
             out,
         );
@@ -905,8 +953,10 @@ impl<Msg: 'static> InspectorTabs<Msg> {
         active: usize,
         on_select: Callback<Msg, usize>,
     ) -> NodeId {
+        let h = ui.env.theme.space(34.0);
+        let w = ui.env.theme.space(400.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(34.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -915,19 +965,20 @@ impl<Msg: 'static> InspectorTabs<Msg> {
                 active,
                 on_select,
             },
-            |_| Size::new(400.0, 34.0),
+            move |_| Size::new(w, h),
         )
     }
 
     fn tab_spans(&self, env: &Env, rect: Rect) -> Vec<(f32, f32)> {
         let pad = env.theme.space(18.0);
+        let gap = env.theme.space(8.0);
         let mut x = rect.x + pad;
         let mut spans = Vec::with_capacity(self.labels.len());
         for label in &self.labels {
             let l = layout(&env.fonts, label, &text_style(env, 12.5, None, TextAlign::Left));
-            let w = l.width.ceil() + 18.0;
+            let w = l.width.ceil() + pad;
             spans.push((x, x + w));
-            x += w + 8.0;
+            x += w + gap;
         }
         spans
     }
@@ -996,8 +1047,10 @@ impl PieceMapBar {
         buckets: Vec<u8>,
         completed_all: bool,
     ) -> NodeId {
+        let h = ui.env.theme.space(56.0);
+        let w = ui.env.theme.space(400.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(56.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -1007,7 +1060,7 @@ impl PieceMapBar {
                 buckets,
                 completed_all,
             },
-            |_| Size::new(400.0, 56.0),
+            move |_| Size::new(w, h),
         )
     }
 }
@@ -1030,9 +1083,9 @@ impl<Msg> Widget<Msg> for PieceMapBar {
             out.push(DrawCmd::Text(run));
         }
 
-        let bar_y = rect.y + 24.0;
-        let bar_h = 22.0;
-        let gap = 2.0;
+        let bar_y = rect.y + env.theme.space(24.0);
+        let bar_h = env.theme.space(22.0);
+        let gap = env.theme.space(2.0).max(1.0);
         let segs = if self.buckets.is_empty() {
             64usize
         } else {
@@ -1079,9 +1132,9 @@ impl StyledLabel {
         let env = ui.env.clone();
         let t = text.to_string();
         let measure_fn = move |w: Option<f32>| {
-            let mut st = TextStyle::new(env.chain.clone(), size_px);
-            st.max_width = w;
+            let mut st = text_style(&env, size_px, w, TextAlign::Left);
             st.wrap = true;
+            st.ellipsis = false;
             let l = layout(&env.fonts, &t, &st);
             Size::new(l.width.ceil(), l.height.ceil())
         };
@@ -1100,9 +1153,9 @@ impl StyledLabel {
 
 impl<Msg> Widget<Msg> for StyledLabel {
     fn paint(&self, env: &Env, rect: Rect, _state: WidgetState, out: &mut DisplayList) {
-        let mut st = TextStyle::new(env.chain.clone(), self.size_px);
-        st.max_width = Some(rect.w);
+        let mut st = text_style(env, self.size_px, Some(rect.w), TextAlign::Left);
         st.wrap = true;
+        st.ellipsis = false;
         let l = layout(&env.fonts, &self.text, &st);
         for run in l.to_runs(Point::new(rect.x, rect.y), self.color) {
             out.push(DrawCmd::Text(run));
@@ -1129,8 +1182,10 @@ impl<Msg: 'static> StatusBarWidget<Msg> {
         right_text: String,
         on_limits_click: Callback<Msg, ()>,
     ) -> NodeId {
+        let h = ui.env.theme.space(32.0);
+        let w = ui.env.theme.space(500.0);
         let mut st = Style::leaf();
-        st.height = Dim::Px(32.0);
+        st.height = Dim::Px(h);
         ui.add_widget(
             parent,
             st,
@@ -1141,7 +1196,7 @@ impl<Msg: 'static> StatusBarWidget<Msg> {
                 right_text,
                 on_limits_click,
             },
-            |_| Size::new(500.0, 32.0),
+            move |_| Size::new(w, h),
         )
     }
 }

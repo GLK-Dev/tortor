@@ -31,7 +31,7 @@ use super::theme::{
     TEXT_DIM, TEXT_MUTED, WINDOW_BG,
 };
 use super::widgets::{
-    ActionButton, FilterInput, InspectorTabs, ModalBackdrop, PieceMapBar, ScaledBox, SectionLabel,
+    ActionButton, FilterInput, InspectorTabs, LogoBadge, ModalBackdrop, PieceMapBar, ScaledBox, SectionLabel,
     SidebarHeader, SidebarItem, StatusBarWidget, StyledLabel, Surface, TableHeader, TorrentRow,
     TorrentRowProps,
 };
@@ -120,6 +120,7 @@ enum ActiveModal {
         dl_text: String,
         ul_text: String,
     },
+    About,
 }
 
 #[derive(Debug)]
@@ -147,6 +148,7 @@ enum Msg {
     DlLimitInput(String),
     UlLimitInput(String),
     SaveLimits,
+    OpenAboutModal,
     CloseModal,
     ToggleFile(usize, usize, bool),
     SelectAllFiles(usize, bool),
@@ -536,6 +538,9 @@ fn update(m: &mut Model, msg: Msg) -> Command<Msg> {
                 let _ = s.command_tx.send(CoreCommand::StopAll);
             }
             m.modal = None;
+        }
+        Msg::OpenAboutModal => {
+            m.modal = Some(ActiveModal::About);
         }
         Msg::OpenLimitsModal => {
             m.modal = Some(ActiveModal::SpeedLimits {
@@ -1409,6 +1414,63 @@ fn view_modal(m: &Model, modal: &ActiveModal) -> View<Msg> {
                 ),
             ]
         }
+        ActiveModal::About => {
+            let title_lbl = m.i18n.tr("modal-about-title");
+            let ver_lbl = m
+                .i18n
+                .tr_args("about-version", &[("ver", Arg::Str(env!("CARGO_PKG_VERSION").into()))]);
+            let desc_lbl = m.i18n.tr("about-desc");
+            let author_lbl = m.i18n.tr("about-author");
+            let license_lbl = m.i18n.tr("about-license");
+            let repo_lbl = m.i18n.tr("about-repo");
+            let close_lbl = m.i18n.tr("btn-close");
+            vec![
+                View::container(
+                    "about_hdr_row",
+                    Style::row().gap(14.0).align_items(Align::Center),
+                    vec![
+                        View::leaf("about_logo", (), |ui, p| LogoBadge::add(ui, p, 48.0)),
+                        View::container(
+                            "about_hdr_txt",
+                            Style::column().gap(4.0),
+                            vec![
+                                View::leaf("about_title", title_lbl.clone(), move |ui, p| {
+                                    StyledLabel::add(ui, p, &title_lbl, 17.0, TEXT)
+                                }),
+                                View::leaf("about_ver", ver_lbl.clone(), move |ui, p| {
+                                    StyledLabel::add(ui, p, &ver_lbl, 13.0, ACCENT)
+                                }),
+                            ],
+                        ),
+                    ],
+                ),
+                View::leaf("about_desc", desc_lbl.clone(), move |ui, p| {
+                    StyledLabel::add(ui, p, &desc_lbl, 12.5, TEXT_MUTED)
+                }),
+                View::leaf("about_author", author_lbl.clone(), move |ui, p| {
+                    StyledLabel::add(ui, p, &author_lbl, 12.0, TEXT)
+                }),
+                View::leaf("about_license", license_lbl.clone(), move |ui, p| {
+                    StyledLabel::add(ui, p, &license_lbl, 12.0, TEXT_MUTED)
+                }),
+                View::leaf("about_repo", repo_lbl.clone(), move |ui, p| {
+                    StyledLabel::add(ui, p, &repo_lbl, 12.0, CYAN)
+                }),
+                View::container(
+                    "about_btns",
+                    Style::row().gap(8.0).justify(Justify::End),
+                    vec![View::leaf("about_close", close_lbl.clone(), move |ui, p| {
+                        Button::add(
+                            ui,
+                            p,
+                            &close_lbl,
+                            Variant::Primary,
+                            Callback::new(|_| Msg::CloseModal),
+                        )
+                    })],
+                ),
+            ]
+        }
     };
 
     let mut dialog_children = dialog_children;
@@ -1525,6 +1587,17 @@ fn view(m: &Model) -> Vec<View<Msg>> {
                     &lang_code,
                     Variant::Secondary,
                     Callback::new(|_| Msg::ToggleLanguage),
+                )
+            }),
+            View::leaf("btn_about", (), |ui, p| {
+                ActionButton::add(
+                    ui,
+                    p,
+                    "info",
+                    None,
+                    TEXT_MUTED,
+                    false,
+                    Callback::new(|_| Msg::OpenAboutModal),
                 )
             }),
         ],
@@ -1920,6 +1993,48 @@ mod tests {
             _ => false,
         });
         assert!(status_at_bottom, "status bar must stay anchored to bottom at y=1020");
+
+        // Verify system text scale (1.6x) scales heights proportionally
+        let mut ui_scaled: Ui<Msg> = Ui::new(
+            tortor_theme().with_text_scale(1.6),
+            Arc::new(Fonts::new()),
+            vec![],
+            MsgSink::new(),
+        );
+        let root_s = ui_scaled.root();
+        ui_scaled.reconcile(root_s, view(&model));
+        let dl3 = ui_scaled.paint(Size::new(1680.0, 1020.0));
+        let scaled_status = dl3.cmds().iter().any(|cmd| match cmd {
+            hey_draw::DrawCmd::Rect { rect, fill, .. } => {
+                *fill == STATUSBAR_BG
+                    && (rect.h - 51.0).abs() < 1.5
+                    && (rect.bottom() - 1020.0).abs() < 1.5
+            }
+            _ => false,
+        });
+        let actual_status_rects: Vec<_> = dl3.cmds().iter().filter_map(|cmd| match cmd {
+            hey_draw::DrawCmd::Rect { rect, fill, .. } if *fill == STATUSBAR_BG => Some(*rect),
+            _ => None,
+        }).collect();
+        assert!(scaled_status, "status bar must scale with text_scale=1.6 and stay anchored at bottom; got: {actual_status_rects:?}");
+
+        // Verify About modal opens and closes cleanly in both RU and EN
+        let mut model_about = model;
+        let _ = update(&mut model_about, Msg::OpenAboutModal);
+        assert!(matches!(model_about.modal, Some(ActiveModal::About)));
+        let mut ui_about: Ui<Msg> = Ui::new(
+            tortor_theme(),
+            Arc::new(Fonts::new()),
+            vec![],
+            MsgSink::new(),
+        );
+        let r_ab = ui_about.root();
+        ui_about.reconcile(r_ab, view(&model_about));
+        let _ = ui_about.paint(Size::new(1280.0, 780.0));
+        let _ = update(&mut model_about, Msg::ToggleLanguage);
+        ui_about.reconcile(r_ab, view(&model_about));
+        let _ = update(&mut model_about, Msg::CloseModal);
+        assert!(model_about.modal.is_none());
 
         let _ = rt.block_on(engine.shutdown_graceful());
     }

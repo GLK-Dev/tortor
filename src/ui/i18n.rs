@@ -98,6 +98,14 @@ lbl-dl-lim = Download (↓):
 lbl-ul-lim = Upload (↑):
 btn-save = Save
 
+modal-about-title = About TorTor
+about-version = Version { $ver }
+about-desc = High-performance BitTorrent client written in Rust with Hey GUI. Supports TCP, QUIC, IPv6, DHT, PEX, UPnP, and selective file downloads.
+about-author = Author: Vitaly Golik (mjojo / GLK Dev)
+about-license = License: MIT OR Apache-2.0
+about-repo = Repository: https://github.com/GLK-Dev/tortor
+btn-close = Close
+
 unit-b = B
 unit-kb = KB
 unit-mb = MB
@@ -201,6 +209,14 @@ modal-lim-title = Глобальные лимиты скорости (КБ/с, 0
 lbl-dl-lim = Загрузка (↓):
 lbl-ul-lim = Отдача (↑):
 btn-save = Сохранить
+
+modal-about-title = О программе TorTor
+about-version = Версия { $ver }
+about-desc = Высокопроизводительный BitTorrent-клиент на Rust с графическим интерфейсом Hey. Поддерживает TCP, QUIC, IPv6, DHT, PEX, UPnP и выборочную загрузку файлов.
+about-author = Автор: Виталий Голик (mjojo / GLK Dev)
+about-license = Лицензия: MIT OR Apache-2.0
+about-repo = Репозиторий: https://github.com/GLK-Dev/tortor
+btn-close = Закрыть
 
 unit-b = Б
 unit-kb = КБ
