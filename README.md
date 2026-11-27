@@ -1,41 +1,49 @@
-# 🌀 TorTor
+<div align="center">
 
-![TorTor Logo](Images/tortor_icon.png)
+<img src="Images/tortor_icon.png" alt="TorTor Logo" width="112" height="112">
+
+# TorTor
+
+**High-performance cross-platform BitTorrent client written in Rust — built with native [Hey](https://github.com/GLK-Dev/Hey) GPU UI, Linux `io_uring`, and `QUIC + IPv6`.**
 
 [![CI](https://github.com/GLK-Dev/tortor/actions/workflows/ci.yml/badge.svg)](https://github.com/GLK-Dev/tortor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/GLK-Dev/tortor?color=f5a623&label=release)](https://github.com/GLK-Dev/tortor/releases/latest)
+[![Pages](https://img.shields.io/badge/website-GitHub%20Pages-00e5ff)](https://glk-dev.github.io/tortor/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-00ff66)](LICENSE)
 
-*English | [Русский](#русский)*
+[**Website**](https://glk-dev.github.io/tortor/) · [**Download Releases**](https://github.com/GLK-Dev/tortor/releases/latest) · [**Hey UI Framework**](https://github.com/GLK-Dev/Hey) · [**Русский**](#русский)
+
+</div>
 
 ---
 
 ## English
 
-TorTor is a BitTorrent client written in Rust with a desktop GUI powered by [Hey](https://github.com/GLK-Dev/Hey). It runs on Windows, Linux, and macOS, downloads and seeds several torrents at once, and speaks TCP and IPv6 out of the box.
+**TorTor** is a lightweight, crash-safe BitTorrent desktop client built from the ground up in **Rust** by [Vitaly Golik (mjojo)](https://github.com/mjojo) / [GLK Dev](https://github.com/GLK-Dev). Instead of bundling Electron or a web browser, TorTor uses our custom pure-Rust **[Hey](https://github.com/GLK-Dev/Hey)** MVU interface rendered directly with `wgpu` (and automatic `softbuffer` CPU fallback).
 
-### Features
+### Highlights
 
-- **Several torrents at once** in one window, with per-torrent progress, speed, peers and logs. Sessions are restored on the next start.
-- **.torrent files and magnet links.** Magnet metadata is fetched from trackers, the DHT and peers (BEP 9/10) and verified against the info hash.
-- **File selection** for multi-file torrents, also while the download is running. Unselected files are not created.
-- **Finding peers:** HTTP and UDP trackers (multiple trackers via `announce-list`, IPv6 peers), Kademlia DHT (BEP 5, incl. IPv6 per BEP 32; the node answers queries and announces itself), peer exchange (BEP 11).
-- **Uploading:** the client seeds while and after downloading and accepts inbound connections on one port for TCP and QUIC, IPv4 and IPv6. UPnP port forwarding is attempted automatically.
-- **Piece picking:** rarest-first with endgame mode; every piece is checked against its SHA-1 hash before it is written.
-- **Speed limits** for download and upload (configurable from Settings or the status bar, saved between runs).
-- **Fine-grained Settings dialog:** default download folder, start-paused option, compact UI density, listen port, DHT/UPnP/PEX/QUIC toggles, peer & inbound limits, upload slots, request pipeline depth, connect timeout, and resume save interval.
-- **Multilingual UI (RU / EN)** powered by `hey-i18n` with persisted language selection and system `TextScaleFactor` scaling.
-- **Visual inspector:** piece availability map, per-file progress and selection checkboxes, live peers, trackers, and logs.
-- **Crash-safe state:** resume data and the session list are written atomically; progress is recorded only after the data was flushed to disk. Existing files are re-checked when a torrent is added.
-- **Hardened parsing:** limits on message sizes and nesting depth, sanitized file paths (no path traversal), validated torrent metadata.
-- **Optional QUIC transport** between TorTor clients (TLS 1.3). Other clients are reached over plain TCP.
-- **io_uring disk backend on Linux.**
+| Area | Capabilities |
+| --- | --- |
+| **Desktop GUI** | Native **Windows**, **Linux**, and **macOS** interface powered by **Hey** (`wgpu` / `softbuffer`), HiDPI & system `TextScaleFactor` scaling, compact density mode, live **RU / EN** Fluent localization (`hey-i18n`). |
+| **Networking** | Multi-torrent swarms, `.torrent` files & `magnet:` URIs (BEP 9/10), HTTP/UDP multi-tracker `announce-list`, Kademlia DHT (BEP 5 + IPv6 BEP 32), PEX (BEP 11), automatic UPnP forwarding, dual-stack IPv4/IPv6 TCP + TorTor-to-TorTor **QUIC (TLS 1.3)**. |
+| **Disk & Integrity** | Linux **`io_uring`** (`tokio-uring`), Windows `FILE_SHARE_DELETE` (files stay movable/deletable), per-piece SHA-1 verification before write, crash-safe atomic `fastresume`, disk re-check on existing files, and selective multi-file download. |
+| **Fine-Grained Control** | 4-tab **Settings** modal (Default folder, start-paused, compact density, listen port, DHT/UPnP/PEX/QUIC toggles, active/inbound peer caps, upload slots, block pipeline depth, connect timeout, resume interval) + instant global speed caps. |
+| **Security & Hardening** | Strict message size & bencode nesting limits, path traversal sanitization, validated torrent metadata, and automated `rustsec` dependency auditing in CI. |
 
-### Not supported (yet)
+### Download Ready GUI Builds
 
-uTP (BEP 29), BitTorrent v2 / hybrid torrents (BEP 52), protocol encryption (MSE/PE), Fast Extension (BEP 6), local peer discovery (BEP 14), NAT-PMP/PCP, a full tit-for-tat choking algorithm (uploads use a fixed number of slots), sequential download, and downloading from the `--cli` mode (see below). QUIC peers are TorTor-only: it is not a standard BitTorrent transport.
+Prebuilt desktop archives are published automatically on every release tag via [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
-### Build and run
+| Platform | Package | Notes |
+| --- | --- | --- |
+| **Windows (x86_64)** | [`tortor_v*_windows_x86_64.zip`](https://github.com/GLK-Dev/tortor/releases/latest) | Standalone `tortor.exe` with embedded multi-resolution `.ico` icon & Windows `TextScaleFactor` support. |
+| **Linux (x86_64)** | [`tortor_v*_linux_x86_64.tar.gz`](https://github.com/GLK-Dev/tortor/releases/latest) | ELF GUI binary (`io_uring`, Wayland/X11, GTK3 XDG portals) + `./install.sh` & `.desktop` launcher. |
+| **macOS (Universal)** | [`tortor_v*_macos_universal.zip`](https://github.com/GLK-Dev/tortor/releases/latest) | Universal `TorTor.app` bundle (`arm64` Apple Silicon + `x86_64` Intel) with `.icns`, Retina HiDPI, `.torrent` & `magnet:` handlers. |
 
-You need a recent stable Rust toolchain ([rustup](https://rustup.rs)).
+### Build from Source
+
+Requires a recent stable Rust toolchain ([rustup](https://rustup.rs)). `Hey` crates are fetched automatically from GitHub:
 
 ```bash
 git clone https://github.com/GLK-Dev/tortor.git
@@ -43,37 +51,38 @@ cd tortor
 cargo run --release
 ```
 
-On Windows you can also run `build.bat` (1 = debug build, 2 = release build).
+- **Windows:** you can also run `build.bat` (`1` = debug, `2` = release).
+- **Linux:** requires a C compiler (`gcc`) and desktop dev packages (`pkg-config libxkbcommon-dev libwayland-dev libxcb1-dev libxcb-render0-dev libxcb-shm0-dev libxcb-xfixes0-dev libgtk-3-dev`). Run `./packaging/linux/install.sh` to install the binary, icon, and `.desktop` launcher into `~/.local`. Headless build (no GUI): `cargo build --release --no-default-features`.
+- **macOS:** requires Xcode Command Line Tools (`Metal` / Cocoa). After `cargo build --release`, run `./packaging/macos/build_app.sh` to package `TorTor.app`.
+- **Haiku:** links the HeOS SDK (`libheos_fs`, `libheos_net`); set `HEOS_SDK_LIB_DIR` to `<haiku-tree>/sdk/lib` (defaults to `/boot/system/develop/lib` and `/boot/system/lib`).
 
-**Linux:** a C compiler (gcc) and desktop dev headers (pkg-config, libxkbcommon-dev, libwayland-dev, libxcb*-dev, libgtk-3-dev) are required to build the GUI. You can install the built GUI binary, icon, and .desktop launcher via ./packaging/linux/install.sh. Without the GUI: cargo build --release --no-default-features.\n\n**macOS:** requires Xcode Command Line Tools (Metal / Cocoa backend via wgpu & winit). Run ./packaging/macos/build_app.sh after cargo build --release to assemble a standalone TorTor.app bundle.
-
-**Haiku:** the build links the HeOS SDK (`libheos_fs`, `libheos_net`). Set `HEOS_SDK_LIB_DIR` to the `sdk/lib` directory of the HeOS tree (for example `haiku-master/sdk/lib`). Without it, `/boot/system/develop/lib` and `/boot/system/lib` are searched. The BFS Direct-IO backend is Haiku-only; it is not verified on a real BFS volume yet.
-
-### Usage
+### CLI Reference
 
 ```text
-tortor [OPTIONS] [MAGNET]
+tortor [OPTIONS] [MAGNET_OR_TORRENT]
 
-  -t, --torrent <FILE>        open a .torrent file at start
-  -o, --output <DIR>          download directory (default: current directory)
-      --listen-port <PORT>    first port to try for TCP+QUIC (default: 6881; the DHT uses the next one)
-  -v, --verbose               debug logging
-      --cli                   no GUI: print torrent info, optionally query the tracker (--announce-tracker)
-                              or only listen (--listen-port); does not download
+  -t, --torrent <FILE>        open a .torrent file at start (positional .torrent paths also work)
+  -o, --output <DIR>          download directory (GUI defaults to OS Downloads; CLI defaults to .)
+      --listen-port <PORT>    first port for TCP + QUIC (default: 6881; DHT uses next port)
+  -v, --verbose               enable debug logging
+      --cli                   run without GUI: inspect .torrent, query tracker (--announce-tracker), or listen
 ```
 
-In the window, use **+ Add**, choose a `.torrent` file or paste a magnet link, select a tag and download directory, then confirm. Use the sidebar to filter by state or tag, inspect pieces/files/peers in the bottom tabs, click the **RU/EN** button to switch language, and click the status bar limits to configure KiB/s limits (`0` = unlimited).
+> Open TCP and UDP port `6881` (or your configured port) in your router/firewall if UPnP is unavailable so inbound peers can connect.
 
-Open the port (TCP and UDP, default 6881) in your firewall/router if UPnP is unavailable; without it TorTor still downloads but cannot accept incoming connections.
+### Storage Locations
 
-**Where data is kept**
-
-| What | Windows | Linux | macOS |
+| Data | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| Session list, limits | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
-| Resume data | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` | `~/Library/Application Support/TorTor/resume/` |
+| Session list & settings | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
+| Fast-resume state | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` | `~/Library/Application Support/TorTor/resume/` |
 
-### Development
+### Architecture & Development
+
+- `src/core` — torrent parser (`bencode`), piece & selection manager, async disk backends (`StandardDisk`, Linux `UringDisk`, Haiku `BfsDirectDisk`), atomic `fastresume`, `SessionStore`, and runtime `ClientSettings`.
+- `src/net` — dual-stack TCP/QUIC `Engine`, peer wire protocol & swarm scheduler, HTTP/UDP trackers, Kademlia DHT, magnet fetcher, UPnP (`igd-next`), and global bandwidth shaper.
+- `src/ui` — Hey MVU dashboard, Industrial Dark theme tokens, custom chamfered widgets (`PieceMapBar`, `TableHeader`, `TorrentRow`), Fluent EN/RU i18n, and background session coordinator.
+- `tests/` — loopback integration tests for magnet metadata fetch and TCP/QUIC/IPv4/IPv6 transfers.
 
 ```bash
 cargo fmt --all -- --check
@@ -82,45 +91,36 @@ cargo test --all-features
 cargo bench --bench hash_bench
 ```
 
-The tests include end-to-end transfers between real peers over loopback (TCP, QUIC, IPv4, IPv6), magnet metadata download, file selection and the DHT. Two examples talk to the real network: `cargo run --release --example magnet_fetch -- "<magnet>"` and `cargo run --release --example download -- "<magnet>" <dir> [seconds] [file,indexes]`.
+See [CHANGELOG.md](CHANGELOG.md) for the release history. Not yet supported: uTP (BEP 29), BitTorrent v2/hybrid (BEP 52), MSE/PE encryption, Fast Extension (BEP 6), LPD (BEP 14), NAT-PMP/PCP, full tit-for-tat choking, sequential mode, and downloading in `--cli` mode.
 
-Layout: `src/core` (torrent model, piece manager, disk, resume), `src/net` (engine, sessions, trackers, DHT, magnet metadata, UPnP, rate limiting), `src/ui` (GUI), `tests/` (integration tests). See [CHANGELOG.md](CHANGELOG.md) for the history.
+---
 
-### License
+### Built with Hey by GLK Dev
 
-Dual-licensed under MIT or Apache-2.0, see [LICENSE](LICENSE).
+TorTor is developed by **[Vitaly Golik (mjojo)](https://github.com/mjojo)** under **[GLK Dev](https://github.com/GLK-Dev)** and showcases **[Hey](https://github.com/GLK-Dev/Hey)** — our pure-Rust cross-platform desktop UI framework featuring GPU/CPU rendering, Flexbox/Taffy layout, `fluent-bundle` localization, and zero WebView/Electron overhead.
 
 ---
 
 <a id="русский"></a>
 ## Русский
 
-TorTor — BitTorrent-клиент на Rust с графическим интерфейсом на базе [Hey](https://github.com/GLK-Dev/Hey). Работает в Windows, Linux и macOS, качает и раздаёт несколько торрентов одновременно, поддерживает IPv6.
+**TorTor** — быстрый, надёжный и лёгкий кроссплатформенный BitTorrent-клиент, написанный с нуля на **Rust** ([Виталий Голик / mjojo](https://github.com/mjojo), **[GLK Dev](https://github.com/GLK-Dev)**). Вместо тяжёлого Electron/Chromium используется наш собственный нативный GUI-фреймворк **[Hey](https://github.com/GLK-Dev/Hey)** с аппаратным рендерингом `wgpu` и автоматическим fallback на `softbuffer`.
 
-### Возможности
+### Ключевые возможности
 
-- **Несколько торрентов в одном окне:** прогресс, скорость, пиры и журнал по каждому. Сессии восстанавливаются при следующем запуске.
-- **.torrent-файлы и magnet-ссылки.** Метаданные magnet-ссылки загружаются у трекеров, из DHT и у пиров (BEP 9/10) и проверяются по info hash.
-- **Выбор файлов** в многофайловых торрентах, в том числе во время загрузки. Невыбранные файлы не создаются.
-- **Поиск пиров:** HTTP- и UDP-трекеры (несколько трекеров через `announce-list`, IPv6-пиры), DHT Kademlia (BEP 5, IPv6 по BEP 32; узел отвечает на запросы и объявляет себя), обмен пирами (BEP 11).
-- **Раздача:** клиент раздаёт во время загрузки и после неё и принимает входящие соединения на одном порту для TCP и QUIC, IPv4 и IPv6. Проброс порта через UPnP включается автоматически.
-- **Выбор кусков:** сначала самые редкие, режим endgame; каждый кусок проверяется по SHA-1 до записи.
-- **Ограничение скорости** загрузки и раздачи (настраивается в окне настроек или строке состояния, сохраняется между запусками).
-- **Тонкая настройка (окно Настройки):** папка загрузок по умолчанию, добавление на паузе, компактный режим, порт TCP/QUIC, переключатели DHT/UPnP/PEX/QUIC, лимиты пиров и входящих подключений, слоты отдачи, глубина конвейера, таймаут подключения и интервал сохранения `.resume`.
-- **Двуязычный интерфейс (RU / EN)** на базе `hey-i18n` с сохранением выбранного языка и поддержкой системного масштаба текста `TextScaleFactor`.
-- **Инспектор торрента:** карта частей, выбор файлов с чекбоксами, список пиров, трекеры и журнал событий.
-- **Устойчивое состояние:** данные возобновления и список сессий пишутся атомарно; прогресс фиксируется только после сброса данных на диск. При добавлении торрента существующие файлы перепроверяются.
-- **Защищённый разбор:** лимиты на размер сообщений и вложенность, очистка путей файлов (нет выхода за каталог загрузки), проверка метаданных торрента.
-- **Необязательный транспорт QUIC** между клиентами TorTor (TLS 1.3). С остальными клиентами связь идёт по обычному TCP.
-- **Дисковый бэкенд io_uring в Linux.**
+| Раздел | Возможности |
+| --- | --- |
+| **Десктопный GUI** | Нативный интерфейс для **Windows**, **Linux** и **macOS** на базе **Hey**: HiDPI, системный масштаб `TextScaleFactor`, компактный режим, переключение **RU / EN** на лету (`hey-i18n`). |
+| **Сеть и пиры** | Несколько торрентов в одном окне, `.torrent` и `magnet:` (BEP 9/10), HTTP/UDP-трекеры и `announce-list`, Kademlia DHT (BEP 5 + IPv6 BEP 32), PEX (BEP 11), UPnP, dual-stack IPv4/IPv6 TCP + **QUIC (TLS 1.3)** между клиентами TorTor. |
+| **Диск и целостность** | **`io_uring`** (`tokio-uring`) в Linux, режим `FILE_SHARE_DELETE` в Windows (файлы не блокируются от переноса/удаления), SHA-1 проверка каждого куска, атомарный `fastresume`, автопроверка существующих файлов и выборочное скачивание. |
+| **Тонкая настройка** | Окно **Настройки** (4 вкладки: папка загрузок, старт на паузе, компактность, порт, DHT/UPnP/PEX/QUIC, лимиты пиров, слоты отдачи, глубина конвейера, таймауты, интервал сохранения) + мгновенные лимиты скорости. |
+| **Безопасность** | Лимиты размера сообщений и глубины bencode, защита от path traversal, строгая валидация метаданных и аудит зависимостей через `rustsec`. |
 
-### Чего пока нет
+### Готовые сборки и установка из исходников
 
-uTP (BEP 29), торренты v2 и гибридные (BEP 52), шифрование протокола (MSE/PE), Fast Extension (BEP 6), локальный поиск пиров (BEP 14), NAT-PMP/PCP, полноценный алгоритм choking с оценкой скорости (для раздачи используется фиксированное число слотов), последовательная загрузка и скачивание в режиме `--cli` (см. ниже). QUIC работает только между клиентами TorTor: это не стандартный транспорт BitTorrent.
+Готовые архивы для **Windows (`.zip`)**, **Linux (`.tar.gz` + `install.sh` + `.desktop`)** и **macOS Universal (`TorTor.app` для Apple Silicon + Intel)** доступны на странице [Releases](https://github.com/GLK-Dev/tortor/releases/latest).
 
-### Сборка и запуск
-
-Нужна свежая стабильная версия Rust ([rustup](https://rustup.rs)).
+Сборка из исходного кода (требуется стабильный Rust):
 
 ```bash
 git clone https://github.com/GLK-Dev/tortor.git
@@ -128,50 +128,21 @@ cd tortor
 cargo run --release
 ```
 
-В Windows можно запустить `build.bat` (1 — отладочная сборка, 2 — релизная).
+- **Windows:** можно использовать скрипт `build.bat`.
+- **Linux:** установите `gcc`, `pkg-config`, `libxkbcommon-dev`, `libwayland-dev`, `libxcb*-dev`, `libgtk-3-dev`. После сборки `./packaging/linux/install.sh` установит приложение, иконку и `.desktop`-ярлык. Без GUI: `cargo build --release --no-default-features`.
+- **macOS:** требуются Xcode Command Line Tools (`Metal`/Cocoa). После `cargo build --release` скрипт `./packaging/macos/build_app.sh` соберёт готовый бандл `TorTor.app`.
 
-**Linux:** для сборки GUI нужен компилятор C (gcc) и dev-пакеты (pkg-config, libxkbcommon-dev, libwayland-dev, libxcb*-dev, libgtk-3-dev). Скрипт ./packaging/linux/install.sh устанавливает бинарник, иконку и .desktop-ярлык в меню приложений. Сборка без GUI: cargo build --release --no-default-features.\n\n**macOS:** требуются Xcode Command Line Tools (графический бэкенд Metal / Cocoa через wgpu и winit). После cargo build --release скрипт ./packaging/macos/build_app.sh собирает готовый бандл TorTor.app с иконкой и ассоциациями .torrent / magnet:.
+### Где хранятся данные
 
-### Использование
-
-```text
-tortor [ПАРАМЕТРЫ] [MAGNET]
-
-  -t, --torrent <ФАЙЛ>        открыть .torrent при запуске
-  -o, --output <КАТАЛОГ>      каталог загрузки (по умолчанию текущий)
-      --listen-port <ПОРТ>    первый порт для TCP+QUIC (по умолчанию 6881; DHT использует следующий)
-  -v, --verbose               подробный журнал
-      --cli                   без окна: вывести сведения о торренте, при желании опросить трекер
-                              (--announce-tracker) или только слушать порт (--listen-port); не скачивает
-```
-
-В окне нажмите **+ Add Torrent** или вставьте ссылку в поле **URL/Magnet**, выберите каталог и нажмите **Start Swarm**. В верхней панели задаются ограничения скорости (КиБ/с, `0` — без ограничений) и показывается состояние порта и UPnP.
-
-Если UPnP недоступен, откройте порт (TCP и UDP, по умолчанию 6881) в файрволе и на роутере: без этого TorTor качает, но не принимает входящие соединения.
-
-**Где хранятся данные**
-
-| Что | Windows | Linux | macOS |
+| Данные | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| Список сессий, лимиты | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
+| Сессии и настройки | `%APPDATA%\TorTor\session.json` | `~/.config/TorTor/session.json` | `~/Library/Application Support/TorTor/session.json` |
 | Данные возобновления | `%APPDATA%\TorTor\resume\` | `~/.local/share/TorTor/resume/` | `~/Library/Application Support/TorTor/resume/` |
 
-### Разработка
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo bench --bench hash_bench
-```
-
-Тесты включают сквозные передачи между реальными пирами по loopback (TCP, QUIC, IPv4, IPv6), загрузку метаданных magnet-ссылок, выбор файлов и DHT. Два примера работают с настоящей сетью: `cargo run --release --example magnet_fetch -- "<magnet>"` и `cargo run --release --example download -- "<magnet>" <каталог> [секунды] [номера,файлов]`.
-
-Структура: `src/core` (модель торрента, менеджер кусков, диск, возобновление), `src/net` (движок, сессии, трекеры, DHT, метаданные magnet, UPnP, ограничение скорости), `src/ui` (интерфейс), `tests/` (интеграционные тесты). История изменений — в [CHANGELOG.md](CHANGELOG.md).
-
-### Лицензия
-
-Двойная лицензия MIT или Apache-2.0, см. [LICENSE](LICENSE).
-
 ---
-Автор: [mjojo](https://github.com/mjojo), [GLK Dev](https://github.com/GLK-Dev).
+
+<div align="center">
+
+Dual-licensed under **MIT** or **Apache-2.0** · See [LICENSE](LICENSE) · Crafted by [**mjojo**](https://github.com/mjojo) at [**GLK Dev**](https://github.com/GLK-Dev)
+
+</div>

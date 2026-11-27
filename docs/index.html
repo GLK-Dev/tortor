@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TorTor — High-Performance BitTorrent Client in Rust</title>
+  <meta name="description" content="TorTor is a cross-platform BitTorrent client written in Rust with SIMD verification, Linux io_uring zero-copy I/O, QUIC + TCP IPv6 networking, and Hey GPU GUI.">
+  <link rel="icon" type="image/png" href="assets/tortor_icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Onest:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a href="#top" class="brand">
+        <img src="assets/tortor_icon.png" alt="TorTor logo">
+        <span>TorTor</span>
+        <span class="brand-tag chamfer-sm" id="nav-ver">v1.8.2</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#preview" data-i18n="nav-preview">GUI Preview</a>
+        <a href="#features" data-i18n="nav-features">Features</a>
+        <a href="#platforms" data-i18n="nav-platforms">Downloads</a>
+        <a href="#ecosystem" data-i18n="nav-ecosystem">GLK Dev &amp; Hey</a>
+      </nav>
+      <div class="nav-actions">
+        <button id="lang-toggle" class="btn btn-sm chamfer-sm" type="button">RU / EN</button>
+        <a href="https://github.com/GLK-Dev/tortor" class="btn btn-cyan btn-sm chamfer-sm" target="_blank" rel="noopener" data-i18n="nav-github">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top" class="container">
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow chamfer-sm">
+            <span class="eyebrow-dot"></span>
+            <span data-i18n="hero-badge">RUST 2021 · HEY GUI · IO_URING · QUIC + IPv6</span>
+          </div>
+          <h1 data-i18n="hero-title">BitTorrent at <span class="accent">Native Speed</span>. Zero Bloat.</h1>
+          <p class="hero-sub" data-i18n="hero-sub">
+            High-performance cross-platform BitTorrent client built in Rust with dynamic SIMD SHA-1/SHA-256 dispatch, Linux io_uring zero-copy I/O, QUIC + TCP dual-stack networking, and a custom GPU-accelerated Hey UI.
+          </p>
+          <div class="hero-ctas">
+            <a id="hero-primary-dl" href="https://github.com/GLK-Dev/tortor/releases/latest" class="btn btn-primary chamfer">
+              <span data-i18n="hero-dl-latest">Download for Desktop</span>
+              <span class="dl-os" style="font-family:var(--font-mono);font-size:0.78rem;opacity:0.85"></span>
+            </a>
+            <a href="https://github.com/GLK-Dev/tortor/releases" class="btn chamfer" target="_blank" rel="noopener" data-i18n="hero-view-rel">All Releases</a>
+          </div>
+          <div class="os-row">
+            <a id="dl-win" class="os-pill chamfer-sm" href="#">Windows x64 (.zip)</a>
+            <a id="dl-lin" class="os-pill chamfer-sm" href="#">Linux x64 (.tar.gz)</a>
+            <a id="dl-mac" class="os-pill chamfer-sm" href="#">macOS Universal (.app)</a>
+          </div>
+        </div>
+
+        <aside class="hero-telemetry chamfer">
+          <div class="telemetry-head">
+            <div class="telemetry-title">
+              <img src="assets/tortor_icon.png" alt="TorTor badge">
+              <div>
+                <strong>TorTor Engine</strong>
+                <div style="font-family:var(--font-mono);font-size:0.74rem;color:var(--green)" data-i18n="tel-status">SWARM READY · DUAL-STACK</div>
+              </div>
+            </div>
+            <span class="brand-tag chamfer-sm">-TT1820-</span>
+          </div>
+          <div class="telemetry-metrics">
+            <div class="metric-box chamfer-sm">
+              <div class="metric-label" data-i18n="tel-m1-l">Disk Engine</div>
+              <div class="metric-value cyan" data-i18n="tel-m1-v">io_uring + Zero-Copy</div>
+            </div>
+            <div class="metric-box chamfer-sm">
+              <div class="metric-label" data-i18n="tel-m2-l">Transport</div>
+              <div class="metric-value accent" data-i18n="tel-m2-v">TCP + QUIC (TLS 1.3)</div>
+            </div>
+            <div class="metric-box chamfer-sm">
+              <div class="metric-label" data-i18n="tel-m3-l">UI Framework</div>
+              <div class="metric-value" data-i18n="tel-m3-v">Hey MVU (GPU/CPU)</div>
+            </div>
+            <div class="metric-box chamfer-sm">
+              <div class="metric-label" data-i18n="tel-m4-l">Tests Passed</div>
+              <div class="metric-value green" data-i18n="tel-m4-v">109 Verified</div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="preview" class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="prev-kicker">INTERACTIVE PREVIEW</div>
+          <h2 data-i18n="prev-title">Industrial Dark Dashboard powered by Hey</h2>
+          <p class="section-desc" data-i18n="prev-desc">
+            No Electron, no Chromium WebView. TorTor renders directly via wgpu / softbuffer with HiDPI scaling, system TextScaleFactor support, and live RU/EN Fluent localization.
+          </p>
+        </div>
+      </div>
+
+      <div class="app-frame">
+        <div class="app-titlebar">
+          <div class="app-title-left">
+            <img src="assets/tortor_icon.png" alt="TorTor icon">
+            <span>TorTor Download Manager</span>
+          </div>
+          <div class="app-dots"><span></span><span></span><span></span></div>
+        </div>
+        <div class="app-toolbar">
+          <div class="toolbar-group">
+            <button class="tool-btn primary chamfer-sm" type="button">+ Add</button>
+            <button class="tool-btn chamfer-sm" type="button">Pause</button>
+            <button class="tool-btn chamfer-sm" type="button">Resume</button>
+            <button class="tool-btn chamfer-sm" type="button">Settings</button>
+          </div>
+          <div class="toolbar-group">
+            <span style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-muted);align-self:center">TextScaleFactor · Compact · RU/EN</span>
+          </div>
+        </div>
+        <div class="app-body">
+          <div class="app-sidebar">
+            <div class="sidebar-label" data-i18n="sb-cat">CATEGORIES</div>
+            <button class="sidebar-btn active" data-cat="all" type="button"><span data-i18n="sb-all">All</span><code>3</code></button>
+            <button class="sidebar-btn" data-cat="downloading" type="button"><span data-i18n="sb-dl">Downloading</span><code>1</code></button>
+            <button class="sidebar-btn" data-cat="seeding" type="button"><span data-i18n="sb-seed">Seeding</span><code>1</code></button>
+            <button class="sidebar-btn" data-cat="paused" type="button"><span data-i18n="sb-paused">Paused</span><code>1</code></button>
+          </div>
+          <div class="app-main">
+            <div style="overflow-x:auto">
+              <table class="torrent-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th-name">Name</th>
+                    <th data-i18n="th-size">Size</th>
+                    <th data-i18n="th-prog">Progress</th>
+                    <th data-i18n="th-down">Down</th>
+                    <th data-i18n="th-up">Up</th>
+                    <th data-i18n="th-peers">Peers</th>
+                  </tr>
+                </thead>
+                <tbody id="mock-rows"></tbody>
+              </table>
+            </div>
+            <div class="app-inspector">
+              <div class="inspector-tabs">
+                <button class="tab-btn active chamfer-sm" data-tab="pieces" type="button" data-i18n="tab-pieces">Piece Map</button>
+                <button class="tab-btn chamfer-sm" data-tab="files" type="button" data-i18n="tab-files">Files</button>
+                <button class="tab-btn chamfer-sm" data-tab="peers" type="button" data-i18n="tab-peers">Peers</button>
+                <button class="tab-btn chamfer-sm" data-tab="info" type="button" data-i18n="tab-info">Engine Tuning</button>
+              </div>
+              <div id="mock-inspector-body"></div>
+            </div>
+          </div>
+        </div>
+        <div class="app-statusbar">
+          <span>DHT: <strong class="status-ok">Active (BEP 5/32)</strong> · UPnP: <strong class="status-cyan">Mapped :6881</strong></span>
+          <span>DL Limit: <strong class="status-accent">∞</strong> · UL Limit: <strong class="status-accent">∞</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="feat-kicker">ARCHITECTURE &amp; PROTOCOL</div>
+          <h2 data-i18n="feat-title">Engineered for Throughput &amp; Safety</h2>
+        </div>
+      </div>
+      <div class="cards-3">
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f1-tag">STORAGE</div>
+            <h3 data-i18n="f1-title">Linux io_uring &amp; Share-Delete Safety</h3>
+            <p data-i18n="f1-desc">Uses native tokio-uring asynchronous disk I/O on Linux, Windows FILE_SHARE_DELETE handles so files stay movable/deletable, and crash-safe atomic fastresume flushes.</p>
+          </div>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f2-tag">NETWORKING</div>
+            <h3 data-i18n="f2-title">Dual-Stack TCP, QUIC &amp; UPnP</h3>
+            <p data-i18n="f2-desc">Single-port dual-stack IPv4/IPv6 listeners, HTTP/UDP multi-tracker announce-list, Kademlia DHT (BEP 5/32), PEX (BEP 11), UPnP mapping, and TorTor-to-TorTor QUIC.</p>
+          </div>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f3-tag">INTEGRITY</div>
+            <h3 data-i18n="f3-title">Dynamic SIMD &amp; Hardened Parser</h3>
+            <p data-i18n="f3-desc">Every piece is verified via SHA-1 before commit, file paths are sanitized against traversal, and bencode payloads enforce strict size and nesting bounds.</p>
+          </div>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f4-tag">CONTROL</div>
+            <h3 data-i18n="f4-title">4-Tab Settings &amp; Live Tuning</h3>
+            <p data-i18n="f4-desc">Adjust bandwidth caps, active peers per torrent, global inbound cap, upload slots, block pipeline depth, timeouts, PEX/QUIC toggles, and compact UI density.</p>
+          </div>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f5-tag">SELECTIVE I/O</div>
+            <h3 data-i18n="f5-title">Live Multi-File Selection</h3>
+            <p data-i18n="f5-desc">Choose which files inside a torrent to download even mid-swarm. Unselected files are never created on disk and skipped at piece level.</p>
+          </div>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag" data-i18n="f6-tag">SCALING &amp; I18N</div>
+            <h3 data-i18n="f6-title">DPI, TextScaleFactor &amp; RU/EN UI</h3>
+            <p data-i18n="f6-desc">Proportional layout scaling across Windows, Linux, and macOS Retina displays using bundled Onest typography and fluent translations.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="platforms" class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker" data-i18n="plat-kicker">READY DESKTOP BINARIES</div>
+          <h2 data-i18n="plat-title">Native GUI Out of the Box on Windows, Linux &amp; macOS</h2>
+          <p class="section-desc" data-i18n="plat-desc">Every release tag automatically compiles signed/packaged GUI archives via GitHub Actions.</p>
+        </div>
+      </div>
+      <div class="cards-3">
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag">WINDOWS 10/11</div>
+            <h3 data-i18n="p-win-t">Windows x86_64</h3>
+            <p data-i18n="p-win-d">Standalone tortor.exe with embedded HiDPI multi-frame icon, wgpu DirectX/Vulkan rendering, and Windows TextScaleFactor scaling.</p>
+          </div>
+          <a id="card-dl-win" href="#" class="btn btn-primary chamfer-sm">tortor_windows_x86_64.zip</a>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag">WAYLAND / X11</div>
+            <h3 data-i18n="p-lin-t">Linux x86_64</h3>
+            <p data-i18n="p-lin-d">ELF binary with io_uring disk backend, Wayland &amp; X11 support, GTK3 XDG portal dialogs, plus install.sh and .desktop launcher.</p>
+          </div>
+          <a id="card-dl-lin" href="#" class="btn btn-cyan chamfer-sm">tortor_linux_x86_64.tar.gz</a>
+        </article>
+        <article class="card chamfer">
+          <div>
+            <div class="card-tag">APPLE SILICON + INTEL</div>
+            <h3 data-i18n="p-mac-t">macOS Universal (.app)</h3>
+            <p data-i18n="p-mac-d">Fat Universal binary (Apple Silicon arm64 + Intel x86_64) inside TorTor.app with .icns icon, Retina HiDPI, .torrent and magnet: handlers.</p>
+          </div>
+          <a id="card-dl-mac" href="#" class="btn chamfer-sm">tortor_macos_universal.zip</a>
+        </article>
+      </div>
+    </section>
+
+    <section id="ecosystem" class="section">
+      <div class="promo-panel chamfer">
+        <div>
+          <div class="section-kicker" data-i18n="promo-kicker">CREATED BY VITALY GOLIK (MJOJO / GLK DEV)</div>
+          <h2 data-i18n="promo-title">Built on Open-Source Rust Foundations: TorTor + Hey</h2>
+          <p style="color:var(--text-muted);margin:0" data-i18n="promo-desc">
+            TorTor is crafted by Vitaly Golik (mjojo) at GLK Dev as a showcase of clean systems programming paired with our own lightweight Rust GUI framework — Hey.
+          </p>
+          <ul class="promo-list">
+            <li data-i18n="promo-li1">Hey GUI Engine: pure-Rust declarative MVU framework without Chromium/Electron memory overhead (~19 MB binary).</li>
+            <li data-i18n="promo-li2">End-to-end Rust stack: custom BitTorrent protocol engine, DHT, trackers, UPnP, and GPU rendering in one cohesive codebase.</li>
+            <li data-i18n="promo-li3">Explore more tools, libraries, and desktop software built at GLK Dev.</li>
+          </ul>
+          <div class="hero-ctas" style="margin-bottom:0">
+            <a href="https://github.com/GLK-Dev/Hey" class="btn btn-primary chamfer-sm" target="_blank" rel="noopener" data-i18n="promo-btn-hey">Explore Hey Framework</a>
+            <a href="https://github.com/GLK-Dev" class="btn btn-cyan chamfer-sm" target="_blank" rel="noopener" data-i18n="promo-btn-glk">GLK Dev on GitHub</a>
+            <a href="https://github.com/mjojo" class="btn chamfer-sm" target="_blank" rel="noopener" data-i18n="promo-btn-author">@mjojo Profile</a>
+          </div>
+        </div>
+
+        <div class="stack-card chamfer-sm">
+          <div class="stack-row"><span>Engine</span><code>Rust 2021 · Tokio · Quinn</code></div>
+          <div class="stack-row"><span>UI Framework</span><code>Hey (winit + wgpu / softbuffer)</code></div>
+          <div class="stack-row"><span>Localization</span><code>hey-i18n (Fluent RU / EN)</code></div>
+          <div class="stack-row"><span>Typography</span><code>Onest Variable (Bundled)</code></div>
+          <div class="stack-row"><span>Build from Source</span><code>cargo run --release</code></div>
+          <div class="code-snippet chamfer-sm">git clone https://github.com/GLK-Dev/tortor.git</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div data-i18n="foot-copy">TorTor by Vitaly Golik (mjojo / GLK Dev) · MIT OR Apache-2.0</div>
+      <div class="footer-links">
+        <a href="https://github.com/GLK-Dev/tortor" target="_blank" rel="noopener">TorTor Repo</a>
+        <a href="https://github.com/GLK-Dev/tortor/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/GLK-Dev/tortor/blob/master/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+        <a href="https://github.com/GLK-Dev/Hey" target="_blank" rel="noopener">Hey UI</a>
+        <a href="https://github.com/GLK-Dev" target="_blank" rel="noopener">GLK Dev</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
